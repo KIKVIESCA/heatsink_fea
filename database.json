@@ -111,7 +111,8 @@
             "ambient_temperature": 35,
             "steady_temperature": 85
         },
-        "thermal_conductivity": 4.6
+        "thermal_conductivity": 220,
+        "baseplate_thickness": 20E-3
     },
     "MECCALPA10117": {
         "natural_convection": {
@@ -155,6 +156,7 @@
             "air_velocity": 3,
             "correction_factor": []
         },
-        "thermal_conductivity": 3.7
+        "thermal_conductivity": 220,
+        "baseplate_thickness": 16E-3
     }
 }
