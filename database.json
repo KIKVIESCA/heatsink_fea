@@ -619,6 +619,125 @@
         "baseplate_thickness": 20E-3,
         "baseplate_width": 750
     },
+    "MECCALP30084A": {
+        "natural_convection": {
+            "thermal_resistance": [
+                [
+                    48.6,
+                    0.663
+                ],
+                [
+                    60.2,
+                    0.606
+                ],
+                [
+                    69.9,
+                    0.560
+                ],
+                [
+                    83.8,
+                    0.490
+                ],
+                [
+                    97.7,
+                    0.420
+                ],
+                [
+                    102,
+                    0.407
+                ],
+                [
+                    111,
+                    0.387
+                ],
+                [
+                    122,
+                    0.366
+                ],
+                [
+                    135,
+                    0.340
+                ],
+                [
+                    150,
+                    0.310
+                ],
+                [
+                    164,
+                    0.294
+                ],
+                [
+                    189,
+                    0.263
+                ],
+                [
+                    214,
+                    0.241
+                ],
+                [
+                    234,
+                    0.230
+                ],
+                [
+                    256,
+                    0.218
+                ],
+                [
+                    275,
+                    0.207
+                ],
+                [
+                    296,
+                    0.198
+                ],
+                [
+                    318,
+                    0.186
+                ],
+                [
+                    339,
+                    0.176
+                ],
+                [
+                    362,
+                    0.167
+                ],
+                [
+                    380,
+                    0.164
+                ],
+                [
+                    399,
+                    0.160
+                ],
+                [
+                    422,
+                    0.153
+                ],
+                [
+                    446,
+                    0.146
+                ],
+                [
+                    468,
+                    0.140
+                ],
+                [
+                    492,
+                    0.131
+                ],
+                [
+                    501,
+                    0.130
+                ]
+            ],
+            "ambient_temperature": 25,
+            "steady_temperature": 95
+        },
+        "thermal_conductivity": 220,
+        "baseplate_thickness": 15E-3,
+        "baseplate_width": 300
+    },
     "MECCALPA10117": {
         "natural_convection": {
             "thermal_resistance": [
@@ -654,7 +773,9 @@
                     999.9,
                     0.09040
                 ]
-            ]
+            ],
+            "ambient_temperature": 25,
+            "steady_temperature": 95
         },
         "forced_convection": {
             "thermal_resistance": [],

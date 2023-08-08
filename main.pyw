@@ -1,6 +1,7 @@
 """
 0.1.0 First working prototype.
 0.1.1 Thermal scale. Power img. Vertical.
+0.1.2 Temperature integral.
 """
 
 import json
@@ -20,7 +21,7 @@ __author__ = "Kostadin Kostadinov"
 __copyright__ = "INGENIERIA VIESCA S.L."
 __credits__ = ["Kostadin Kostadinov"]
 __license__ = "TBD"
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 __maintainer__ = "Kostadin Kostadinov"
 __email__ = "kostadin.ivanov@ingenieriaviesca.com"
 __status__ = "Alpha"
@@ -83,9 +84,9 @@ def scaled_convection(z_list):
     else:
         data_count = len(z_list)
         mm_step = z_list[0]
-    # DATASHEET admittance, in W/K
-    convection_z = []
-    convection_Y = []
+    # DATASHEET admittance, in W/K. On z=0, Admittance is 0.
+    convection_z = [0]
+    convection_Y = [0]
     for z,R in HEATSINK_DATA[hs_key][conv_type]['thermal_resistance']:
         convection_z.append(z)
         convection_Y.append(R**-1)
@@ -97,13 +98,9 @@ def scaled_convection(z_list):
             convection_Y,
         )
     # list interpolation
-    boundary_condition = z_list>convection_z[0]-1E-6
+    #boundary_condition = z_list>convection_z[0]-1E-6
     # interpolate for z
-    return np.where(boundary_condition, np.interp(
-        z_list,
-        convection_z,
-        convection_Y,
-    ),convection_Y[0]/convection_z[0]*z_list)*mm_step/z_list
+    return np.interp(z_list+mm_step,convection_z, convection_Y)-np.interp(z_list,convection_z,convection_Y)
 
 
 def edit_layout():
@@ -246,8 +243,8 @@ def run_simulation():
         (simulation_data["baseplate_width"], simulation_data["baseplate_height"])
     ).astype(float)/2
     ryz_cnt = 2*np.ones(2) # 2 rows vertically, 2 colums horizontally
-    tamb_list = np.array(simulation_data["ambient_temperature"])*np.ones((2,2))
-    telm_list = tamb_list + 50 # as stated in datasheet
+    tamb_scalar = simulation_data["ambient_temperature"]
+    telm_list = tamb_scalar*np.ones((2,2)) + 50 # as stated in datasheet
     while map_partition < 20 and (datetime.now() - last_stamp).total_seconds() < SIMULATION_SECONDS:
         print(f"PARTITION #{map_partition} " + 60 * "#")
         # loop variables update and reshape
@@ -259,16 +256,15 @@ def run_simulation():
             mm_step /= (1,2) # split cell height
             ryz_cnt *= (2,1) # 2 rows, 1 column
             ryz_cnt = ryz_cnt.astype(int)
-            tamb_list = np.repeat(tamb_list,2, axis=0).reshape(ryz_cnt)
             telm_list = np.repeat(telm_list,2, axis=0).reshape(ryz_cnt)
         else:
             # split horizontally, left and right part
             mm_step /= (2,1) # split cell width
             ryz_cnt *= (1,2) # 1 row, 2 columns
             ryz_cnt = ryz_cnt.astype(int)
-            tamb_list = np.repeat(tamb_list,2).reshape(ryz_cnt)
             telm_list = np.repeat(telm_list,2).reshape(ryz_cnt)
         matrix_size = np.prod(ryz_cnt)
+        integral_matrix=np.tril(np.ones((ryz_cnt[0],ryz_cnt[0]))) #np.transpose(np.triu(np.ones((ryz_cnt[0],ryz_cnt[0])))/(1+np.arange(ryz_cnt[0])))
         # horizontal index is column id, vertical identifier is row id
         ry, rz = np.meshgrid(np.arange(ryz_cnt[1]), np.arange(ryz_cnt[0]))
         # heat dissipation matrix
@@ -285,30 +281,24 @@ def run_simulation():
         #print(f"Pyz={round(np.sum(pyz_list))} W")
         # CONVECTION ADMITTANCE LIST: shape is 1 x matrix_size W/K
         z_list = (np.arange(ryz_cnt[0]) + 1) * mm_step[1]
-        conv_adm_list = scaled_convection(z_list)
-        conv_adm_list = np.repeat(conv_adm_list, ryz_cnt[1])/ryz_cnt[1]
-        conv_adm_list = np.reshape(conv_adm_list, ryz_cnt)
-        # scale to data
-        Ycv_scale_factor = Yavg_convection/np.sum(conv_adm_list)
-        print(f'Scale factor is {Ycv_scale_factor}')
-        conv_adm_list *= Ycv_scale_factor
-        print(f'Total convection resistance is {np.round(np.sum(conv_adm_list)**-1,3)} K/W')
+        conv_adm_column = scaled_convection(z_list)
+        amb_heat_k = (1+np.arange(ryz_cnt[0]))*dt_experimental
+        #conv_adm_list = np.repeat(conv_adm_column, ryz_cnt[1])/ryz_cnt[1]
+        #conv_adm_list = np.reshape(conv_adm_list, ryz_cnt)
         # loop until error gets below 10C divided by all the elements
         simulation_count = 0
         dt_error = 100  #
         while dt_error > 3 and simulation_count < MAXIMUM_ITERATIONS:
             #print(f"LOOP {simulation_count} t_error={round(dt_error,6)}") # + 60 * "#"
             # CONVECTION TEMPERATURE CORRECTION
-            # compute for z: column 0 to last column
-            tr_below_list = None
-            Mt=np.tril(np.ones((ryz_cnt[0],ryz_cnt[0])))
-            t_factor = (telm_list-simulation_data["ambient_temperature"])/dt_experimental
-            tr_below_list = Mt@t_factor**0.25/ryz_cnt[0]#/np.reshape(np.repeat(1+np.arange(ryz_cnt[0]),ryz_cnt[1]), ryz_cnt)
-            conv_gain = 1-0.7*tr_below_list
-            conv_gain /= np.average(conv_gain)
-            conv_new_list = conv_adm_list*conv_gain
+            dt_loop = telm_list-tamb_scalar
+            conv_adm_list = np.interp(integral_matrix@dt_loop, amb_heat_k, conv_adm_column/ryz_cnt[1])
+            #Ycv_scale_factor = Yavg_convection/np.sum(conv_adm_list)
+            conv_adm_list *= 1#Ycv_scale_factor
+            #print(f'Convection scale factor is {np.round(Ycv_scale_factor,3)}')
+            #conv_gain /= np.average(conv_gain)
             #print(conv_adm_list)
-            #print(f'Total convection resistance is {np.round(np.sum(conv_adm_list)**-1,3)} K/W')
+            print(f'Total convection resistance is {np.round(np.sum(conv_adm_list)**-1,3)} K/W')
             '''rel_th = np.round((np.min(conv_adm_list), np.max(conv_adm_list)), 2)
             print(
                 f"Rth_cv avg is {round(np.sum(conv_adm_list)**-1, 4)} K/W, in range {rel_th}"
@@ -319,12 +309,12 @@ def run_simulation():
                 * 5.67e-8
                 * np.prod(mm_step)
                 * 1e-6
-                * ((telm_list + 273.15) ** 4 - (273.15 + tamb_list) ** 4)
-            ) / (telm_list - tamb_list)
+                * ((telm_list + 273.15) ** 4 - (273.15 + tamb_scalar) ** 4)
+            ) / (telm_list - tamb_scalar)
             #print(f'Total radiation resistance is {np.round(np.sum(rad_adm_list)**-1,3)} K/W')
             #print(rad_adm_list)
             # CONVECTION + RADIATION admittance in W/K
-            admittance_matrix = np.eye(matrix_size) * (rad_adm_list + conv_new_list).ravel()
+            admittance_matrix = np.eye(matrix_size) * (rad_adm_list + conv_adm_list).ravel()
             # CONDUCTION singular matrix in W/K
             conduction_matrix = 0 #matrix_size x matrix_size
             if True:#map_partition > 0:
@@ -347,7 +337,7 @@ def run_simulation():
                     # temperature difference to ambient
                     # np.where(dtr > 1 temperature gradient over difference to ambient, when at least 1 C of difference to ambient is present
                     #gt = np.abs(telm_list - t_loop)
-                    #dtr = gt/(telm_list/2 +t_loop/2 - tamb_list)
+                    #dtr = gt/(telm_list/2 +t_loop/2 - tamb_scalar)
                     # compute
                     # dt * contact length (=np.cross product) / distance, values in K
                     dyzr = (mm_step[1] * dy + mm_step[0] * dz) / (dy**2 + dz**2)
@@ -382,11 +372,11 @@ def run_simulation():
                 # CONVECTION + RADIATION admittance in W/K
             # RESISTANCE in K/W
             resistance_matrix = np.linalg.inv(admittance_matrix+conduction_matrix)
-            tnew_list = tamb_list + (resistance_matrix @ (pyz_list.ravel())).reshape(ryz_cnt)
+            tnew_list = tamb_scalar + (resistance_matrix @ (pyz_list.ravel())).reshape(ryz_cnt)
             # limit
-            tnew_list = np.maximum(tamb_list + 1, tnew_list)
+            tnew_list = np.maximum(tamb_scalar + 1, tnew_list)
             dt_error = np.max(np.abs(tnew_list - telm_list))
-            tnew_list = np.minimum(tamb_list + 199, tnew_list)
+            tnew_list = np.minimum(tamb_scalar + 199, tnew_list)
             # recalculate error
             simulation_count += 1
             #print(telm_list.astype(np.uint8))
@@ -398,11 +388,11 @@ def run_simulation():
             print('POWER GENERATION MATRIX (W)')
             print(pyz_list.astype(int))
             print('POWER TROUGH CONVECTION (W)')
-            print(conv_adm_list.reshape(ryz_cnt)*(telm_list-tamb_list).astype(int))
+            print(conv_adm_list.reshape(ryz_cnt)*(telm_list-tamb_scalar).astype(int))
             print('POWER TROUGH RADIATION (W)')
-            print(rad_adm_list.reshape(ryz_cnt)*(telm_list-tamb_list).astype(int))
+            print(rad_adm_list.reshape(ryz_cnt)*(telm_list-tamb_scalar).astype(int))
             print('POWER TROUGH CONDUCTION (W)')
-            print(np.diag(conduction_matrix).reshape(ryz_cnt)*(telm_list-tamb_list).astype(int))
+            print(np.diag(conduction_matrix).reshape(ryz_cnt)*(telm_list-tamb_scalar).astype(int))
             print('TEMPERATURE OF ELEMENTS')
             print(telm_list.astype(np.uint8))
         rth_avg = np.average(resistance_matrix)
