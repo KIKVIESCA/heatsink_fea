@@ -14,6 +14,9 @@ Heatsink dimensions have to be specified for simulation:
 
 The heatsink is subsequently divided in rectangles. The simulation ends when a loop takes too much time.
 
+| LOOP     | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | ... |
+| ELEMENTS | 4 | 8 | 16| 32| 64|128|256|512| ... |
+
 ![Map partititon](./img/meshgrid.png)
 
 ## Meshgrid variables

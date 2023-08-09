@@ -2,6 +2,7 @@
 0.1.0 First working prototype.
 0.1.1 Thermal scale. Power img. Vertical.
 0.1.2 Temperature integral.
+0.1.3 Forced convection.
 """
 
 import json
@@ -11,7 +12,6 @@ import tkinter.ttk as ttk
 from datetime import datetime
 from os import startfile
 from pathlib import Path
-from tkinter import messagebox
 from tkinter.messagebox import showerror, showinfo
 
 import numpy as np
@@ -21,7 +21,7 @@ __author__ = "Kostadin Kostadinov"
 __copyright__ = "INGENIERIA VIESCA S.L."
 __credits__ = ["Kostadin Kostadinov"]
 __license__ = "TBD"
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 __maintainer__ = "Kostadin Kostadinov"
 __email__ = "kostadin.ivanov@ingenieriaviesca.com"
 __status__ = "Alpha"
@@ -29,22 +29,22 @@ __status__ = "Alpha"
 WORSPACE_DIR = Path('./')/'simulation'#Path.home() / "Desktop"
 WORSPACE_DIR.mkdir(exist_ok=True)
 LAST_DESIGN = WORSPACE_DIR / "test.json"
-COLOR_DIR = Path('./color_palette')
-
+COLOR_PATH = Path('./color_palette.json')
 
 simulation_data = {}
 MAXIMUM_ITERATIONS = 99
-SIMULATION_SECONDS = 5
+SIMULATION_SECONDS = 1
 print_help = False
 
 
 # mm, K/W
 DATABASE_PATH = Path('./database.json')
 if not DATABASE_PATH.is_file():
-    messagebox.showerror('DATABASE MISSING', f'File {DATABASE_PATH} is missing.')
+    showerror('DATABASE MISSING', f'File {DATABASE_PATH} is missing.')
     exit(0)
 with open(DATABASE_PATH, 'r') as reader:
     HEATSINK_DATA = json.load(reader)
+    HEATSINK_LIST = [f'{k}:{HEATSINK_DATA[k]["description"]}' for k in sorted(HEATSINK_DATA)]
 
 # user configuration
 USER_PATH = Path('./.config.json')
@@ -69,38 +69,14 @@ def reset_main():
     main_frame = ttk.Frame(tk_mgr)
     main_frame.pack(fill=tk.BOTH, expand=1)
 
-def scaled_convection(z_list):
-    """Estimate vertical convection factors using tata from datasheet.
+def scaled_convection(z_list, convection_z, convection_Y):
+    """Estimate vertical convection from 0 to 1st z, 1st to 2nd, etc.
+    admittance is in W/K, corresponds to dz*simulation_baseplate_width
     Z ascending list contains vertical coordinates
-    t respective list contains temperature coordinates respect z
-    returns admittance from 0 or last Z to next Z
     """
-    conv_type = simulation_data["flow_conditions"]
-    hs_key = simulation_data["heatsink"]
-    # INPUT data interpretation
-    if type(z_list) in (int, float):
-        data_count = 1
-        mm_step = z_list
-    else:
-        data_count = len(z_list)
-        mm_step = z_list[0]
-    # DATASHEET admittance, in W/K. On z=0, Admittance is 0.
-    convection_z = [0]
-    convection_Y = [0]
-    for z,R in HEATSINK_DATA[hs_key][conv_type]['thermal_resistance']:
-        convection_z.append(z)
-        convection_Y.append(R**-1)
-    # single value interpolation
-    if data_count == 1:
-        return np.interp(
-            z_list,
-            convection_z,
-            convection_Y,
-        )
-    # list interpolation
-    #boundary_condition = z_list>convection_z[0]-1E-6
     # interpolate for z
-    return np.interp(z_list+mm_step,convection_z, convection_Y)-np.interp(z_list,convection_z,convection_Y)
+    Y_values = np.interp(np.append(z_list, 0), convection_z, convection_Y)
+    return (Y_values-np.roll(Y_values, 1))[:-1]
 
 
 def edit_layout():
@@ -108,39 +84,19 @@ def edit_layout():
     #showinfo("SOURCE LAYOUT", simulation_data["source_layout"])
 
 
-def plot_array(array2d, file_path="loop.png"):
+def plot_array(telm_array, color_array, file_path="loop.png", down2ambient=False):
     """ Plot thermal distribution
     """
-    array_shape = np.shape(array2d) # number of rows, number of columns
+    #array_shape = np.shape(telm_array) # number of rows, number of columns
     # create new image
-    thermal_img = Image.new(mode='RGB', size=(array_shape[1], array_shape[0]))
-    """ Map values from 0 to 1 from color palette
-    relative_temperature is np.array
-    """
-    # read palette
-    if "color_palette" in simulation_data:
-        palette_name = simulation_data['color_palette']
-    else:
-        palette_name = 'e95_rainbow_hc'
-    palette_img = Image.open(COLOR_DIR/f'{palette_name}.jpg')
-    color_list = [
-        palette_img.getpixel((627, k)) for k in range(423, 29, -1)]
-    # assign scale
-    color_len = len(color_list)
-    # apply palette
-    range_list = (simulation_data["ambient_temperature"], np.max(array2d)) #np.min(array2d)
-    color_count = np.interp(array2d, range_list, (0, color_len-1)).astype(np.uint16)
-    for i in range(array_shape[0]):
-        for j in range(array_shape[1]):
-            color_index = color_count[i,j]
-            thermal_img.putpixel((j,i), color_list[color_index])
+    data_range = (simulation_data["ambient_temperature"] if down2ambient else np.min(telm_array), np.max(telm_array))
+    ra,ga,ba = color_interp(telm_array, color_array, data_range)
+    # scale colors to palette color
+    thermal_img = Image.fromarray(np.stack((ra,ga,ba), axis=-1), mode='RGB')
     # resize to nearest
     img_size = np.array(
         (simulation_data["baseplate_width"], simulation_data["baseplate_height"])
     )
-    if color_len>img_size[0]+100:
-        showerror('HEATSINK IS NOT BIG ENOUGH', f'Minimum height is {color_len+100}')
-        return False
     thermal_img = thermal_img.resize(
         img_size.tolist(),
         resample=Image.Resampling.NEAREST,
@@ -155,7 +111,7 @@ def plot_array(array2d, file_path="loop.png"):
         yz_tr_h = yz_bl_h + rect_data[2:]
         draw.rectangle(
             yz_bl_h.tolist() + yz_tr_h.tolist(),
-            outline=color_list[0],
+            outline=tuple(color_array[0]),
             width=1,
         )
     thermal_img = thermal_img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
@@ -172,27 +128,29 @@ def plot_array(array2d, file_path="loop.png"):
     yz2 = yz0+(-20,20)
     draw.line([tuple(yz.tolist()) for yz in (yz2, yz0, yz1)], fill="black", width=3)
     # temperature scale
+    
     fnt = ImageFont.load_default()
-    for i in range(color_len):
-        color = color_list[i]
-        yz0 = full_size-(10,i+10)
-        yz1 = yz0 - (20,0)
-        draw.line([tuple(yz.tolist()) for yz in (yz0, yz1)], fill=color, width=1)
+    palette_array = np.repeat(np.arange(256),2).reshape(256,2)
+    ra,ga,ba = color_interp(palette_array, color_array)
+    palette_img = Image.fromarray(np.stack((ra,ga,ba), axis=-1), mode='RGB')
+    palette_img = palette_img.resize((20, 256)).transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+    full_image.paste(palette_img, (full_size[0]-30, full_size[1]-266))
     # minimum
-    t0 = int(range_list[0])
+    t0 = int(data_range[0])
     yz0 = full_size-(60,10)
-    draw.point((yz0+(29,0)).tolist(), fill="black")
+    draw.point(tuple(yz0+(29,0)), fill="black")
     draw.text(yz0.tolist(), f'{t0}', font=fnt, fill="black")
     # maximum
-    t0 = int(range_list[1])
-    yz0 -= (0, color_len)
-    draw.point((yz0+(29,0)).tolist(), fill="black")
-    draw.text(yz0.tolist(), f'{t0}', font=fnt, fill="black")
-    # heatsink
-    t0 = int(np.min(array2d))
-    yz0 += (0, int((range_list[1]-t0)/(range_list[1]-range_list[0])*color_len))
-    draw.point((yz0+(29,0)).tolist(), fill="black")
-    draw.text(yz0.tolist(), f'{t0}', font=fnt, fill="black")
+    t0 = int(data_range[1])
+    yz0 -= (0, 256)
+    draw.point(tuple(yz0+(29,0)), fill="black")
+    draw.text(tuple(yz0), f'{t0}', font=fnt, fill="black")
+    if down2ambient:
+        # heatsink
+        t0 = int(np.min(telm_array))
+        yz0 += (0, int((data_range[1]-t0)/(data_range[1]-data_range[0])*256))
+        draw.point(tuple(yz0+(29,0)), fill="black")
+        draw.text(tuple(yz0), f'{t0}', font=fnt, fill="black")
     # SAVE
     full_image.save(file_path)
     print(f"See figure {file_path}")
@@ -203,14 +161,25 @@ def run_simulation():
     """y_list = np.arange(0, simulation_data["baseplate_width"])
     z_list = np.arange(0, simulation_data["baseplate_height"])
     y_val, z_val = np.meshgrid(y_list, z_list)"""
-    out_dir = LAST_DESIGN.parent / (LAST_DESIGN.name.split(('.'))[0] +'-'+str(int(datetime.now().timestamp())))
-    out_dir.mkdir(exist_ok=True)
-    with open(out_dir/LAST_DESIGN.name, "w") as writer:
-        json.dump(simulation_data, writer)
-    
-    # check heat sources
-    hs_key = simulation_data["heatsink"]
+    global simulation_data
+    # PULL DATA FROM DATABASE
     conv_type = simulation_data["flow_conditions"]
+    hs_key = simulation_data["heatsink"]
+    if conv_type not in HEATSINK_DATA[hs_key]:
+        showerror('HEATSINK ERROR', f'No {conv_type} data available for heatsink {hs_key}.')
+        return False
+    # pull convection data from database. admittance on 0 is 0
+    convection_array = np.array(HEATSINK_DATA[hs_key][conv_type]['thermal_resistance'])
+    convection_z = np.insert(convection_array[:,0], 0, 0)
+    convection_Y = np.insert(convection_array[:, 1]**-1*simulation_data["baseplate_width"]/HEATSINK_DATA[hs_key]['baseplate_width'],0,0)
+    if conv_type == 'forced_convection':
+        gain_array = np.array(HEATSINK_DATA[hs_key][conv_type]['correction_factor'])
+        conv_gain = np.interp(simulation_data["air_velocity"], gain_array[:,0],gain_array[:,1]**-1)
+        convection_Y *= conv_gain
+    convection_data = [convection_z, convection_Y]
+    conductivity_yz = HEATSINK_DATA[hs_key]["thermal_conductivity"]*HEATSINK_DATA[hs_key]["baseplate_thickness"]
+    dt_experimental = HEATSINK_DATA[hs_key][conv_type]['steady_temperature']-HEATSINK_DATA[hs_key][conv_type]['ambient_temperature']
+    # check heat sources
     heat_count = 0
     source_dict = simulation_data["source_layout"]
     for k in source_dict:
@@ -219,7 +188,7 @@ def run_simulation():
         yz_bl_h = rect_data[:2]
         yz_tr_h = yz_bl_h + rect_data[2:]
         if np.any(yz_bl_h < (0, 0)) or np.any(yz_tr_h > yz_tr_h):
-            messagebox.showerror("RANGE SOURCE", f"Source {k} out of range.")
+            showerror("RANGE SOURCE", f"Source {k} out of range.")
             return False
         """
         for k2 in source_dict:
@@ -229,13 +198,13 @@ def run_simulation():
                 yz_tr_2 = yz_bl_2 + rect_data2[2:]"""
         heat_count += heat_dict["power"]
     if heat_count < 1:  # W
-        messagebox.showerror("LOW SOURCE", f"Source power too low")
+        showerror("LOW SOURCE", f"Source power too low")
         return False
-    Yavg_convection = scaled_convection(simulation_data["baseplate_height"])
-    print(f"Rth_cv={round(Yavg_convection**-1,4)} K/W")
-    conductivity_yz = HEATSINK_DATA[hs_key]["thermal_conductivity"]*HEATSINK_DATA[hs_key]["baseplate_thickness"]
+    Yavg_convection = scaled_convection(simulation_data["baseplate_height"], convection_data[0], convection_data[1])
+    print(f"Rth_cv={np.round(Yavg_convection**-1,4)} K/W")
+
     #conductivity_x = HEATSINK_DATA[hs_key]["thermal_conductivity"]/HEATSINK_DATA[hs_key]["baseplate_thickness"]
-    dt_experimental = HEATSINK_DATA[hs_key][conv_type]['steady_temperature']-HEATSINK_DATA[hs_key][conv_type]['ambient_temperature']
+    
     # loop, starting 2x2 matrix
     last_stamp = datetime.now()
     map_partition = 0
@@ -281,22 +250,23 @@ def run_simulation():
         #print(f"Pyz={round(np.sum(pyz_list))} W")
         # CONVECTION ADMITTANCE LIST: shape is 1 x matrix_size W/K
         z_list = (np.arange(ryz_cnt[0]) + 1) * mm_step[1]
-        conv_adm_column = scaled_convection(z_list)
-        amb_heat_k = (1+np.arange(ryz_cnt[0]))*dt_experimental
-        #conv_adm_list = np.repeat(conv_adm_column, ryz_cnt[1])/ryz_cnt[1]
-        #conv_adm_list = np.reshape(conv_adm_list, ryz_cnt)
+        conv_adm_column = scaled_convection(z_list, convection_data[0], convection_data[1])
+        amb_heat_k = (1+np.arange(ryz_cnt[0]))*(dt_experimental**0.25)
+        if conv_type == 'forced_convection':
+            conv_adm_list = np.repeat(conv_adm_column, ryz_cnt[1])/ryz_cnt[1]
+            conv_adm_list = np.reshape(conv_adm_list, ryz_cnt)
         # loop until error gets below 10C divided by all the elements
         simulation_count = 0
         dt_error = 100  #
         while dt_error > 3 and simulation_count < MAXIMUM_ITERATIONS:
             #print(f"LOOP {simulation_count} t_error={round(dt_error,6)}") # + 60 * "#"
             # CONVECTION TEMPERATURE CORRECTION
-            dt_loop = telm_list-tamb_scalar
-            conv_adm_list = np.interp(integral_matrix@dt_loop, amb_heat_k, conv_adm_column/ryz_cnt[1])
+            if conv_type == 'natural_convection':
+                dt_loop = telm_list-tamb_scalar
+                conv_adm_list = np.interp(integral_matrix@(dt_loop**0.25), amb_heat_k, conv_adm_column/ryz_cnt[1])
             #Ycv_scale_factor = Yavg_convection/np.sum(conv_adm_list)
-            conv_adm_list *= 1#Ycv_scale_factor
+            #conv_adm_list *= Ycv_scale_factor
             #print(f'Convection scale factor is {np.round(Ycv_scale_factor,3)}')
-            #conv_gain /= np.average(conv_gain)
             #print(conv_adm_list)
             print(f'Total convection resistance is {np.round(np.sum(conv_adm_list)**-1,3)} K/W')
             '''rel_th = np.round((np.min(conv_adm_list), np.max(conv_adm_list)), 2)
@@ -404,78 +374,106 @@ def run_simulation():
             plot_path = out_dir / f"loop{map_partition}.png"
             plot_array(
                 np.reshape(telm_list, ryz_cnt),
+                color_array,
                 plot_path
             )
         if simulation_count + 1 > MAXIMUM_ITERATIONS:
-            print(f"MAXIMUM ITERATIONS REACH WITHOUT CONVERGING: dt_error={round(dt_error)} K, with shape {np.shape(telm_list)}")
+            showerror('CONVERGING ERROR', f'MAXIMUM ITERATIONS REACH WITHOUT CONVERGING: dt_error={round(dt_error)} K, with shape {np.shape(telm_list)}')
             return False
-    plot_path = out_dir / "thermal_distribution.png"
-    plot_array(
-        np.reshape(telm_list, ryz_cnt),
-        plot_path
-    )
-    if plot_path.is_file():
-        startfile(plot_path)
+    # power grid
+    simulation_data['results'] = {}
+    simulation_data['results']['temperature'] = telm_list.tolist()
+    with open(LAST_DESIGN, "w") as writer:
+        json.dump(simulation_data, writer)
     print("END OF SIMULATION" + 60 * "#")
+    showinfo('DATA GENERATED', f'Simulation results generated in file {LAST_DESIGN.name}')
     return True
 
+def color_interp(data_list, color_array, data_range=None):
+    """ Interpolate colours
+    """
+    if data_range is None:
+        data_range = (np.min(data_list), np.max(data_list))
+    color_len = len(color_array)
+    data_range = np.interp(np.arange(color_len), (0,color_len), data_range) 
+    for i in range(3):
+        yield np.interp(data_list, data_range, color_array[:,i]).astype(np.uint8) 
 
 def open_simulation(prj_path=None):
-    if prj_path is None:
-        # open
-        prj_path = Path(
-            tk_filedialog.askopenfilename(
-                initialdir=WORSPACE_DIR,
-                title="Select project 0XXXXX.json file",
-                filetypes=(("json files", "*.json"), ("all files", "*.*")),
-            )
-        )
-    if not prj_path.is_file():
-        return False
     global simulation_data, LAST_DESIGN
-    with prj_path.open("r") as reader:
-        simulation_data = json.load(reader)
+    # READ PROJECT
+    if prj_path.is_file():
+        with prj_path.open("r") as reader:
+            simulation_data = json.load(reader)
+        # save recent
+        user_config['recent'][prj_path.as_posix()] = datetime.now().strftime('%Y-%m-%d')
+        with open(USER_PATH, "w") as writer:
+            json.dump(user_config, writer)
     LAST_DESIGN = prj_path
+    def get_data():
+        global simulation_data
+        try:
+            simulation_data["baseplate_width"] = int(y_combo.get())
+            simulation_data["baseplate_height"] = int(z_combo.get())
+        except ValueError as e:
+            showerror('ERROR DE DATOS', f'Las dimensiones deben ser numeros.')
+            return False
+        simulation_data["heatsink"] = model_combo.get().split(':',1)[0]
+        simulation_data["ambient_temperature"] = int(tamb_combo.get())
+        conv_type = flow_combo.get()
+        simulation_data["flow_conditions"] = conv_type
+        if conv_type == 'forced_convection':
+            simulation_data['air_velocity'] = round(float(speed_combo.get()), 1)
+        elif conv_type == 'natural_convection' and 'air_velocity' in simulation_data:
+            del simulation_data['air_velocity']
+        simulation_data['color_palette'] = color_combo.get()
+        return True
+    
     reset_main()
-    title = simulation_data["title"]
-    ttk.Label(main_frame, text=f"HEATSINK THERMAL SIMULATION {title}").pack(
-        padx=20, pady=20
-    )
+    #ttk.Label(main_frame, text=f"HEATSINK THERMAL SIMULATION {LAST_DESIGN.name}").pack(padx=20, pady=20)
     grid_frame = ttk.LabelFrame(main_frame, text=f"Heatsink configuration")
     grid_frame.pack(fill=tk.BOTH, padx=20, pady=20)
 
     row_id = 0
+    ttk.Label(grid_frame, text="Description").grid(row=row_id, column=0, padx=10)
+    desc_combo = ttk.Combobox(grid_frame, width=70)
+    if 'description' in simulation_data:
+        desc_combo.set(simulation_data["description"])
+    desc_combo.grid(row=row_id, column=1, padx=10, pady=10, columnspan=2)
+    
+    row_id = 1
     ttk.Label(grid_frame, text="Model").grid(row=row_id, column=0, padx=10)
-    model_combo = ttk.Combobox(grid_frame)
+    model_combo = ttk.Combobox(grid_frame, width=70)
     model_combo["state"] = "readonly"
-    model_list = list(HEATSINK_DATA)
-    model_combo["values"] = model_list
-    model_combo.set(simulation_data['heatsink'])
-    model_combo.grid(row=row_id, column=1, padx=10)
+    model_combo["values"] = HEATSINK_LIST
+    if 'heatsink' in simulation_data:
+        k = simulation_data['heatsink']
+        model_combo.set(f'{k}:{HEATSINK_DATA[k]["description"]}')
+    else:
+        model_combo.set(HEATSINK_LIST[0])
+    model_combo.grid(row=row_id, column=1, padx=10, columnspan=2)
 
     row_id += 1
     ttk.Label(grid_frame, text="Width").grid(row=row_id, column=0, padx=10)
     y_combo = ttk.Combobox(grid_frame)
     y_combo["values"] = list(range(300, 1000, 50))
-    y_combo.set(simulation_data["baseplate_width"])
+    if 'baseplate_width' in simulation_data:
+        y_combo.set(simulation_data["baseplate_width"])
+    else:
+        y_combo.set(300)
     y_combo.grid(row=row_id, column=1, padx=10, pady=10)
-    ttk.Label(grid_frame, text="mm").grid(row=row_id, column=2, padx=10)
+    ttk.Label(grid_frame, text="mm").grid(row=row_id, column=2, padx=10, sticky='w')
 
     row_id += 1
     ttk.Label(grid_frame, text="Height").grid(row=row_id, column=0, padx=10)
     z_combo = ttk.Combobox(grid_frame)
     z_combo["values"] = list(range(300, 1000, 50))
-    z_combo.set(simulation_data["baseplate_height"])
+    if 'baseplate_height' in simulation_data:
+        z_combo.set(simulation_data["baseplate_height"])
+    else:
+        z_combo.set(400)
     z_combo.grid(row=row_id, column=1, padx=10, pady=10)
-    ttk.Label(grid_frame, text="mm").grid(row=row_id, column=2, padx=10)
-
-    row_id += 1
-    ttk.Label(grid_frame, text="Ambient").grid(row=row_id, column=0, padx=10)
-    tamb_combo = ttk.Combobox(grid_frame)
-    tamb_combo["values"] = list(range(50, 90, 10))
-    tamb_combo.set(simulation_data["ambient_temperature"])
-    tamb_combo.grid(row=row_id, column=1, padx=10, pady=10)
-    ttk.Label(grid_frame, text="ºC").grid(row=row_id, column=2, padx=10)
+    ttk.Label(grid_frame, text="mm").grid(row=row_id, column=2, padx=10, sticky='w')
 
     row_id += 1
     ttk.Label(grid_frame, text="Source layout").grid(row=row_id, column=0, padx=10)
@@ -484,16 +482,18 @@ def open_simulation(prj_path=None):
     )
     def show_layout():
         """ Generate layout image."""
-        file_path="source_layout.png"
+        out_dir = LAST_DESIGN.parent / LAST_DESIGN.name.split(('.'))[0]
+        out_dir.mkdir(exist_ok=True)
+        file_path=out_dir / "source_layout.png"
         img_size = (
             simulation_data["baseplate_width"], simulation_data["baseplate_height"]
             )
         # create new image
-        thermal_img = Image.new(mode='L', size=img_size, color='white')
+        power_img = Image.new(mode='L', size=img_size, color='black')
         # draw power elements
         v1 = img_size*np.array((0,1))
         m1 = np.array([[1,0],[0,-1]])
-        draw = ImageDraw.Draw(thermal_img)
+        draw = ImageDraw.Draw(power_img)
         fnt = ImageFont.load_default()
         source_dict = simulation_data["source_layout"]
         for k in source_dict:
@@ -505,14 +505,13 @@ def open_simulation(prj_path=None):
             yz_tr_h = v1 + m1@yz_tr_h
             draw.rectangle(
                 yz_bl_h.tolist() + yz_tr_h.tolist(),
-                outline=0,
-                fill=0,
+                outline='white',
+                fill='white',
                 width=1,
             )
             p = heat_dict['power']
-            draw.text(yz_bl_h.tolist(), f'{k}:{p}W', font=fnt, fill=0)
-        #thermal_img = thermal_img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
-        thermal_img.save(file_path)
+            draw.text(yz_bl_h.tolist(), f'{k}:{p}W', font=fnt, fill='white')
+        power_img.save(file_path)
         print(f"See source layout {file_path}")
         startfile(file_path)
         return True
@@ -521,35 +520,112 @@ def open_simulation(prj_path=None):
         row=row_id, column=2, padx=10, pady=10
     )
 
+
+    grid_frame = ttk.LabelFrame(main_frame, text=f"Setup configuration")
+    grid_frame.pack(fill=tk.BOTH, padx=20, pady=20)
+
+    row_id = 0
+    ttk.Label(grid_frame, text="Ambient temperature").grid(row=row_id, column=0, padx=10)
+    tamb_combo = ttk.Combobox(grid_frame)
+    tamb_combo["values"] = list(range(50, 90, 10))
+    if 'ambient_temperature' in simulation_data:
+        tamb_combo.set(simulation_data["ambient_temperature"])
+    else:
+        tamb_combo.set(45)
+    tamb_combo.grid(row=row_id, column=1, padx=10, pady=10)
+    ttk.Label(grid_frame, text="ºC").grid(row=row_id, column=2, padx=10, sticky='w')
+
     row_id += 1
+    ttk.Label(grid_frame, text="Flow conditions").grid(row=row_id, column=0, padx=10)
+    flow_combo = ttk.Combobox(grid_frame)
+    flow_combo["values"] = ['natural_convection','forced_convection']
+    if 'flow_conditions' in simulation_data:
+        flow_combo.set(simulation_data["flow_conditions"])
+    else:
+        flow_combo.set('natural_convection')
+    flow_combo.grid(row=row_id, column=1, padx=10, pady=10)
+
+    row_id += 1
+    ttk.Label(grid_frame, text="Air velocity").grid(row=row_id, column=0, padx=10)
+    speed_combo = ttk.Combobox(grid_frame)
+    speed_combo["values"] = list(range(1,10))
+    if 'air_velocity' in simulation_data:
+        speed_combo.set(simulation_data["air_velocity"])
+    elif 'flow_conditions' in simulation_data and simulation_data['flow_conditions']=='forced_convection':
+        speed_combo.set(4)
+    speed_combo.grid(row=row_id, column=1, padx=10, pady=10)
+    ttk.Label(grid_frame, text="m/s (forced convection only)").grid(row=row_id, column=2, padx=10, sticky='w')
+    
+    row_id += 1
+    with open(COLOR_PATH,'r') as reader:
+        palette_dict = json.load(reader)
     ttk.Label(grid_frame, text="Color palette").grid(row=row_id, column=0, padx=10)
     color_combo = ttk.Combobox(grid_frame)
-    palette_list = [p.name for p in COLOR_DIR.glob('*.*')]
-    if "color_palette" in simulation_data:
-        color_combo.set(simulation_data['color_palette'])
-    elif len(palette_list)>0:
-        color_combo.set(palette_list[0])
-    color_combo["values"] = [p.name.split('.')[0] for p in COLOR_DIR.glob('*.*')]
+    palette_list = list(palette_dict)
+    color_combo["values"] = palette_list
     color_combo['state']='readonly'
     color_combo.grid(row=row_id, column=1, padx=10, pady=10)
-    def open_palette():
-        startfile(COLOR_DIR/color_combo.get())
-    ttk.Button(grid_frame, text="OPEN", command=open_palette).grid(
-        row=row_id, column=2, padx=10, pady=10
-    )
+    color_canvas = tk.Canvas(grid_frame, height=20, width=512)
+    color_canvas.grid(row=row_id, column=2, padx=10, pady=10)
+    def show_palette(event=None):
+        color_name = color_combo.get()
+        color_array = np.array(palette_dict[color_name])
+        color_x = np.arange(512)
+        ra, ga, ba = color_interp(color_x, color_array)
+        for i in color_x:
+            rgb = "#%02x%02x%02x" % (ra[i],ga[i],ba[i])
+            color_canvas.create_line(i, 0, i, 20, fill=rgb)
+    color_combo.bind("<<ComboboxSelected>>", show_palette)
+    if "color_palette" in simulation_data:
+        color_combo.set(simulation_data['color_palette'])
+        show_palette()
+    elif len(palette_list)>0:
+        color_combo.set(palette_list[0])
+        show_palette()
+    
+    row_id += 1
+    ttk.Label(grid_frame, text="Minimum temperature").grid(row=row_id, column=0, padx=10)
+    min_combo = ttk.Combobox(grid_frame)
+    min_combo["values"] = ['ambient_temperature','minimum_temperature']
+    min_combo.set('ambient_temperature')
+    min_combo['state']='readonly'
+    min_combo.grid(row=row_id, column=1, padx=10, pady=10)
 
     def run_sim():
-        global simulation_data
-        simulation_data["baseplate_width"] = int(y_combo.get())
-        simulation_data["baseplate_height"] = int(z_combo.get())
-        simulation_data["heatsink"] = model_combo.get()
-        simulation_data["ambient_temperature"] = int(tamb_combo.get())
-        simulation_data['color_palette'] = color_combo.get()
-        return run_simulation()
-
-    ttk.Button(main_frame, text="RUN SIMULATION", command=run_sim).pack(
+        if get_data():
+            return run_simulation()
+    
+    grid_frame = ttk.LabelFrame(main_frame, text=f"Simulation")
+    grid_frame.pack(fill=tk.BOTH, padx=20, pady=20)
+    
+    ttk.Button(grid_frame, text="RUN SIMULATION", command=run_sim).grid(row=0, column=0,
         padx=20, pady=20
     )
+
+    def plot_results():
+        if 'results' not in simulation_data:
+            showerror('RESULTS NOT FOUND', f'Simulation results re missing.')
+            return False
+        out_dir = LAST_DESIGN.parent / LAST_DESIGN.name.split(('.'))[0] #+'-'+str(int(datetime.now().timestamp())))
+        out_dir.mkdir(exist_ok=True)
+        # OUTPUT
+        # thermal image
+        plot_path = out_dir / "thermal_distribution.png"
+        telm_list = np.array(simulation_data['results']['temperature'])
+        with open(COLOR_PATH,'r') as reader:
+            color_array = np.array(json.load(reader)[simulation_data["color_palette"]]).astype(np.uint8)
+        if plot_array(
+            telm_list,
+            color_array,
+            plot_path,
+            min_combo.get()[0] == 'a'
+        ):
+            startfile(plot_path)
+
+    ttk.Button(grid_frame, text="PLOT RESULT", command=plot_results).grid(row=0, column=1,
+        padx=20, pady=20
+    )
+
 
     def save_simulation():
         file_path = tk_filedialog.asksaveasfilename(
@@ -559,12 +635,9 @@ def open_simulation(prj_path=None):
             title="Select project 0XXXXX.json file",
             filetypes=(("json files", "*.json"), ("all files", "*.*")),
         )
-        global simulation_data
-        simulation_data["baseplate_width"] = int(y_combo.get())
-        simulation_data["baseplate_height"] = int(z_combo.get())
-        simulation_data["heatsink"] = model_combo.get()
-        simulation_data["ambient_temperature"] = int(tamb_combo.get())
-        simulation_data['color_palette'] = color_combo.get()
+
+        if not get_data():
+            return False
         with open(file_path, "w") as writer:
             json.dump(simulation_data, writer)
         return True
@@ -573,19 +646,11 @@ def open_simulation(prj_path=None):
         padx=20, pady=20
     )
     ttk.Button(
-        main_frame, text="OPEN A DIFFERENT CONFIGURATION", command=open_simulation
+        main_frame, text="OPEN A DIFFERENT CONFIGURATION", command=start_page
     ).pack(padx=20, pady=20)
 
-
-if __name__ == "__main__":
-    tk_mgr = tk.Tk()
-    tk_mgr.geometry("900x600")
-    tk_mgr.config(bg="#F8F8FF")
-    tk_mgr.title(f"HEATSINK SIMULATOR (version {__version__}). {__copyright__}")
-
-    main_frame = ttk.Frame(tk_mgr)
-    main_frame.pack(fill=tk.BOTH, expand=1)
-
+def start_page():
+    reset_main()
     grid_frame = ttk.LabelFrame(main_frame, text=f"Recent projects")
     grid_frame.pack(fill=tk.BOTH, padx=20, pady=20)
 
@@ -598,18 +663,48 @@ if __name__ == "__main__":
        path_combo.set(recent_list[0])
     path_combo.grid(row=row_id, column=1, padx=10, pady=10)
     def open_selected():
-        return open_simulation(Path(path_combo.get()))
+        prj_path = Path(path_combo.get())
+        if prj_path.is_file():
+            return open_simulation(prj_path)
+        showerror('BROKEN PATH', f'File {prj_path} not found.')
+        return False
     
     ttk.Button(grid_frame, text="OPEN", command=open_selected).grid(row=row_id, column=2, padx=10, pady=10)
 
+    def browse_configuration():
+        # open
+        prj_path = Path(
+            tk_filedialog.askopenfilename(
+                initialdir=WORSPACE_DIR,
+                title="Select project 0XXXXX.json file",
+                filetypes=(("json files", "*.json"), ("all files", "*.*")),
+            )
+        )
+        if prj_path.is_file():
+            path_combo.set(prj_path)
 
-    ttk.Button(main_frame, text="BROWSE CONFIGURATION", command=open_simulation).pack(
+    ttk.Button(main_frame, text="BROWSE CONFIGURATION", command=browse_configuration).pack(
         padx=20, pady=20
     )
     def new_simulation():
-        pass
+        global simulation_data
+        simulation_data = {}
+        return open_simulation(WORSPACE_DIR / "new_project.json")
+
     ttk.Button(main_frame, text="NEW CONFIGURATION", command=new_simulation).pack(
         padx=20, pady=20
     )
+
+
+if __name__ == "__main__":
+    tk_mgr = tk.Tk()
+    tk_mgr.geometry("900x600")
+    tk_mgr.config(bg="#F8F8FF")
+    tk_mgr.title(f"HEATSINK SIMULATOR (version {__version__}). {__copyright__}")
+
+    main_frame = ttk.Frame(tk_mgr)
+    main_frame.pack(fill=tk.BOTH, expand=1)
+
+    start_page()
 
     tk_mgr.mainloop()
