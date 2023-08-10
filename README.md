@@ -1,52 +1,167 @@
-# HEATSINK FINITE ELEMENT ANALYSIS
-Thermal finite element analysis using python libraries.
+# HEATSINK THERMAL IMAGING PREDICTION
 
-## Dimensional specification
+This project allows the calculation of the temperature distribution in heatsinks. Thermal finite element analysis is performed using python libraries.
+
+The following figure shows the thermal distribution on a heatsink with 2 heat sources located in the central area. The airflow follows the direction of the arrow.
+
+The heatsink is divided in multiple elements and the temperature is calculated in loop. After a few iterations, the temperatures converge in the range of 64ºC (lower corners) and 94ºC (upper corners).
+
+![Loop](./img/loop.gif)
+
+## Table of contents
+
+1. [SPECIFICATION](#SPECIFICATION)
+2. [HEAT TRANSFER ALGEBRA](#HEAT-TRANSFER-ALGEBRA)
+3. [RESULTS](#RESULTS)
+
+## SPECIFICATION
+
+### Boundary conditions
 
 Heatsink dimensions have to be specified for simulation:
-* The baseplate width is obtained when selecting a heatsink.
-* The baseplate height must be specified for vertical convection. Z axis increase from bottom to top, in the direction of airflow.
+* The baseplate width Y, perpendicular of the direction of the airflow.
+* The baseplate height Z, parallel to the direction of the aiflow.
 * The baseplate thickness must be specified for thermal conduction.
 
 ![Heatsink dimensions](./img/baseplate-dimensions-mbf.png)
 
-## Mehsgrid
+### Heat Sources layout
 
-The heatsink is subsequently divided in rectangles. The simulation ends when a loop takes too much time.
+For all power sources, define
+* Unique designator
+* Position (Y,Z in mm)
+* Dimensions (W,H in mm)
+* Power generated(in W)
+* Thermal resistance from junction to exposed pad (in K/W)
 
-| LOOP     | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | ... |
-| ELEMENTS | 4 | 8 | 16| 32| 64|128|256|512| ... |
+![Heat source dimensions](./img/heat_source.png)
+
+
+## HEAT TRANSFER ALGEBRA
+
+The heatsink is subsequently divided in rectangles. The simulation ends when a loop exceeds a specific time.
+| PARTITION | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | ... |
+|-----------|---|---|---|---|---|---|---|---|-----|
+| ELEMENTS  | 4 | 8 | 16| 32| 64|128|256|512| ... |
 
 ![Map partititon](./img/meshgrid.png)
 
-## Meshgrid variables
+### Partition loops @ level 1
 
-Each element is assigned a temperature. The starting temperature used is the ambient temperature increased by the temperature increase specified in the heatsink datasheet. On resizing, the temperature of each element stays. On loop, temperature differente is calculated trough admittance megamatrix.
+Each element is assigned a temperature.
 
-The power generation matrix is calculated for element. Intersection of heat sources with each element is multiplied by the heat density.
+$$ T_{element}= \theta + T_{ambient}$$
+
+The starting temperature increase is taken from the heatsink datasheet. Typical values of $ \theta $:
+* 70ºK for natural convection
+* 50ºK for forced convection
+
+On resizing, the temperature of each element is kept.
+
+$$ T_{element}-T_{ambient}= \theta = \begin{pmatrix}
+\theta_{y=0,z=0} & \dots & \theta_{y=Y,z=0} \\
+\vdots & \ddots & \vdots \\
+\theta_{y=0,z=Z} & \dots & \theta_{y=Y,z=Z}
+\end{pmatrix} $$
+
+The power generation matrix is calculated for each element. Intersection of heat sources (s) with each element is multiplied by the heat density q.
+
+$$
+\dot Q(y,z) = \sum_{\forall s} q_s \cdot \left( \begin{pmatrix}
+y=0,z=0 & \dots & y=Y,z=0 \\
+\vdots & \ddots & \vdots \\
+y=0,z=Z & \dots & y=Y,z=Z
+\end{pmatrix} \cap (Y,Z,W,H)_s \right)
+$$
 
 Both the radiation and the convection admittance are calculated for each element base on the vertical position. Emissivity of 0.9 is used for the radiation.
 
 Conduction for adjacent elements is calculated using the contact length * baseplate thickness / distance between centers of elements.
+* Horizontal conduction
+  * The contact length is the cell height dz
+  * The distance between centers is the cell width dy
+* Vertical conduction
+  * The contact length is the cell width dy
+  * The distance between centers is the cell height dz
 
-### Natural convection grid
+### Differential convection
 
-The datasheet resistance (Rth(z) for z in range(0, z_max)) is inverted for admittance values (Yth(z) for z in range(0, z_max)). Element admittance is the local increase of the admittance. Total admittance must be equal to the sum of the admittance of all elements.
+Datasheets provide the thermal resistance ($ R_{th} $ in K/W) for a specific width y and different heights z. The heat transfer coefficient hcv (W/m2/K) is obtained from deriving the datasheet curve.
 
-![Linear admittance](./img/linear_admittance.png)
+$$ h_{cv}(z) = {{1 \over \Delta y} {\partial {1 \over R_{th}(z)} \over {\partial z}}} $$
 
-However, this does not account for distributed heat.
-Therefore, instead of getting the element adimttance by scaling z values (interpolate (z, z_datasheet, dy_datasheet)), it can be obtained by scaling the sum of the temperatures under z (sum(t under z), sum(t under z_datasheet), dy_datasheet).
+The convection heat transfer coefficient of each element depends only on the vertical coordinate z.
 
-![Datasheet comparison](./img/datasheet_comparison.png)
+![Heat transfer coeficcient](./img/heat_transfer_coefficient.png)
 
-## Thermal loops
+The element admittance (W/K) is obtained by multiplying the heat transfer coefficient by the horizontal and vertical dimensions of the element.
 
-Temperatures, convection, radiation, and power generation matrices are flattened. The resulting vector will start with the element on the bottom left corner, and will end with the element on the top right corner of the heatsink.
-The element admittance megamatrix is created with the flattened convection+radiation admittance in the diagonal.
+$$ R_{th,cv}(z) = h_{cv}(z) \times {\Delta y} \times {\Delta z} $$
+
+### Thermal loops @ level 2
+
+Temperatures, convection, radiation, and power generation matrices are flattened. The elemnt 0 represents the ambient.
+
+| ELEMENT | RELATIVE COORDINATES (y,z) |
+|---|---|
+| 1 | 0,0 |
+| 2 | 1,0 |
+|...| ... |
+| M | Y,Z |
+
+In the following figure M=16.
+
+![Flat index 2x2](./img/flat_index.png)
+
+The convection and radiation coefficients are located in the diagonal.
+
+$$ \left[ R_{th,cv+r}^{-1}  \right] =  \begin{pmatrix}
+R_{th}^{-1}(1\rightarrow 0) & 0 & \dots & 0 \\
+0 & R_{th}^{-1}(2 \rightarrow 0 ) & \dots & 0 \\
+\vdots & \vdots & \ddots  & \vdots \\
+0  & 0 & \dots & R_{th}^{-1}(M \rightarrow 0)
+\end{pmatrix}$$
+
 The conduction matrix is added, considering all permutations of adjacent conduction within the boundary limits.
-Finally, the temperature is calculated by inverting the megamatrix and multiplying it by the flattened power generation.
 
-## Report generation
+$$ \left[ R_{th,k}^{-1}  \right] =  \begin{pmatrix}
+\sum_i R_{th}^{-1}(1 \leftrightarrow i) & -R_{th}^{-1}(1 \leftrightarrow 2) & \dots & -R_{th}^{-1}(1 \leftrightarrow M) \\
+-R_{th}^{-1}(1 \leftrightarrow 2) & \sum_i R_{th}^{-1}(2 \leftrightarrow i) & \dots & -R_{th}^{-1}(2 \leftrightarrow M) \\
+\vdots & \vdots & \ddots  & \vdots \\
+-R_{th}^{-1}(1 \leftrightarrow M) & \dots & 0  & \sum_i R_{th}^{-1}(M \leftrightarrow i)
+\end{pmatrix} $$
 
-Thermal palettes are used to map the temperature results into an image. The minimum temperature of the map is the ambient temperature to allow easy comparison with thermal images. The maximum temperature of the map is the maximum temperature simulated.
+Finally, the temperature is calculated by inverting the M matrix and multiplying (scalar dot product) it by the flattened heat sources.
+
+$$ T_{element} = \Theta + T_{ambient}$$
+
+$$ \Theta = \begin{pmatrix}
+\theta_{1} \\
+\theta_{2} \\
+\vdots \\
+\theta_{M}\\
+\end{pmatrix} = \left[ R_{th,cv+r}^{-1}+R_{th,k}^{-1}  \right]^{-1} \cdot  \begin{pmatrix}
+\dot Q_{1} \\
+\dot Q_{2} \\
+\vdots \\
+\dot Q_{M}\\
+\end{pmatrix}$$
+
+## RESULTS
+
+### Experimental data
+
+The simulation calculates the local temperature of each position of the heatsink. The standard temperature palette mapping goes trough multiple colours for better contrast. The palette goes down to the ambient temperature to allow comparison with experimental results obtained from thermal imaging.
+
+![Experimental comparison](./img/experimental_result.png)
+
+
+### Software alternatives
+
+Comparison with an alternative simulation software shows similar results.
+
+
+![Alternative result](./img/alternative_result.png)
+
+
+

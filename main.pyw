@@ -3,6 +3,7 @@
 0.1.1 Thermal scale. Power img. Vertical.
 0.1.2 Temperature integral.
 0.1.3 Forced convection.
+0.1.4 Reading of palettes.
 """
 
 import json
@@ -18,12 +19,10 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 __author__ = "Kostadin Kostadinov"
-__copyright__ = "INGENIERIA VIESCA S.L."
 __credits__ = ["Kostadin Kostadinov"]
 __license__ = "TBD"
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 __maintainer__ = "Kostadin Kostadinov"
-__email__ = "kostadin.ivanov@ingenieriaviesca.com"
 __status__ = "Alpha"
 
 WORSPACE_DIR = Path('./')/'simulation'#Path.home() / "Desktop"
@@ -33,7 +32,7 @@ COLOR_PATH = Path('./color_palette.json')
 
 simulation_data = {}
 MAXIMUM_ITERATIONS = 99
-SIMULATION_SECONDS = 1
+SIMULATION_SECONDS = 5
 print_help = False
 
 
@@ -128,8 +127,9 @@ def plot_array(telm_array, color_array, file_path="loop.png", down2ambient=False
     yz2 = yz0+(-20,20)
     draw.line([tuple(yz.tolist()) for yz in (yz2, yz0, yz1)], fill="black", width=3)
     # temperature scale
-    
     fnt = ImageFont.load_default()
+    if True:
+        draw.text(tuple((img_size *(1,0)+(0,50)).astype(int)), file_path.name, font=fnt, fill="black")
     palette_array = np.repeat(np.arange(256),2).reshape(256,2)
     ra,ga,ba = color_interp(palette_array, color_array)
     palette_img = Image.fromarray(np.stack((ra,ga,ba), axis=-1), mode='RGB')
@@ -258,7 +258,7 @@ def run_simulation():
         # loop until error gets below 10C divided by all the elements
         simulation_count = 0
         dt_error = 100  #
-        while dt_error > 3 and simulation_count < MAXIMUM_ITERATIONS:
+        while dt_error > 2 and simulation_count < MAXIMUM_ITERATIONS:
             #print(f"LOOP {simulation_count} t_error={round(dt_error,6)}") # + 60 * "#"
             # CONVECTION TEMPERATURE CORRECTION
             if conv_type == 'natural_convection':
@@ -371,12 +371,8 @@ def run_simulation():
         map_partition += 1
         # plot
         if False:#np.min(ryz_cnt)>=2:
-            plot_path = out_dir / f"loop{map_partition}.png"
-            plot_array(
-                np.reshape(telm_list, ryz_cnt),
-                color_array,
-                plot_path
-            )
+            plot_path = Path('./gif') / f"loop{map_partition}.png"
+            plot_array(telm_list,color_array,plot_path)
         if simulation_count + 1 > MAXIMUM_ITERATIONS:
             showerror('CONVERGING ERROR', f'MAXIMUM ITERATIONS REACH WITHOUT CONVERGING: dt_error={round(dt_error)} K, with shape {np.shape(telm_list)}')
             return False
@@ -605,6 +601,8 @@ def open_simulation(prj_path=None):
     def plot_results():
         if 'results' not in simulation_data:
             showerror('RESULTS NOT FOUND', f'Simulation results re missing.')
+            return False
+        if not get_data():
             return False
         out_dir = LAST_DESIGN.parent / LAST_DESIGN.name.split(('.'))[0] #+'-'+str(int(datetime.now().timestamp())))
         out_dir.mkdir(exist_ok=True)
