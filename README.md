@@ -84,6 +84,12 @@ Conduction for adjacent elements is calculated using the contact length * basepl
   * The contact length is the cell width dy
   * The distance between centers is the cell height dz
 
+However, for vertical conduction the fin has a higher contribution. The convection factor of the fin is calculated as
+$$
+f_{fin} =1+ \int_{\forall x \in fin} {{\partial x} \over \sqrt{x^2+dz^2}}
+$$
+
+
 ### Differential convection
 
 Datasheets provide the thermal resistance ($ R_{th} $ in K/W) for a specific width y and different heights z. The heat transfer coefficient hcv (W/m2/K) is obtained from deriving the datasheet curve.
