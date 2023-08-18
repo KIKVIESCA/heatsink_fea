@@ -588,6 +588,8 @@ def open_simulation(prj_path=None):
     row_id = 0
     ttk.Label(grid_frame, text='Designator').grid(row=row_id, column=0, padx=10)
     dsgn_combo = ttk.Combobox(grid_frame)
+    if 'source_layout' not in simulation_data:
+        simulation_data['source_layout'] = {}
     dsgn_list = sorted(list(simulation_data['source_layout']))
     dsgn_combo['values'] = dsgn_list
     dsgn_combo.grid(row=row_id, column=1, padx=10, pady=10)
@@ -681,6 +683,8 @@ def open_simulation(prj_path=None):
 
     def show_layout():
         """ Generate layout image."""
+        if not get_data():
+            return False
         out_dir = LAST_DESIGN.parent / LAST_DESIGN.name.split(('.'))[0]
         out_dir.mkdir(exist_ok=True)
         file_path=out_dir / "source_layout.png"
