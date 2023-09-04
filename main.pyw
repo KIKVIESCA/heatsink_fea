@@ -5,6 +5,7 @@
 0.1.3 Forced convection.
 0.1.4 Reading of palettes.
 0.2.0 Materials.
+0.3.0 Emissivity and package.
 """
 
 import json
@@ -23,7 +24,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageTk
 __author__ = "Kostadin Kostadinov"
 __credits__ = ["Kostadin Kostadinov"]
 __license__ = "TBD"
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __maintainer__ = "Kostadin Kostadinov"
 __status__ = "Alpha"
 
@@ -70,6 +71,8 @@ class Database:
             d = json.load(reader)
             self.heatsinks = d["heatsink"]
             self.materials =  d["material"]
+            self.finish = d["finish"]
+            self.packages = d["package"]
         self.e_list = []
 
     def list_heatsink(self):
@@ -77,6 +80,15 @@ class Database:
 
     def list_material(self):
         return [f'{k}:{self.materials[k]["description"]}' for k in sorted(self.materials)]
+    
+    def list_surface_treatment(self):
+        return list(self.finish)
+    
+    def list_package(self):
+        return list(self.packages)
+
+    def get_package(self, k):
+        return self.packages[k]
     
     def heatsink_info(self, hs_key):
         if hs_key in self.heatsinks:
@@ -259,6 +271,7 @@ def run_simulation():
         return False
     kth_y = thermal_conductivity*DBH.get_baseplate_thickness()
     kth_x = thermal_conductivity/DBH.get_baseplate_thickness()
+    eth = DBH.finish[simulation_data['finish']]
 
     # check heat sources
     heat_count = 0
@@ -401,7 +414,7 @@ def run_simulation():
                 print(f'Total convection resistance is {np.round(np.sum(Yth_conv_list)**-1,3)} K/W')
                 # RADIATION ADMITTANCE LIST: shape is 1 x matrix_size W/K
                 Yth_rad_list = (
-                    0.9
+                    eth
                     * 5.67e-8
                     * np.prod(mm_step)
                     * 1e-6
@@ -509,15 +522,16 @@ def open_simulation(prj_path=None):
         flow_conditions = flow_combo.get()
         simulation_data["flow_conditions"] = flow_conditions
         if flow_conditions == 'forced_convection':
-            v = speed_combo.get()
+            v = speed_combo.get().split('.',1)[0]
             if not v.isdigit():
                 showerror('AIRFLOW ERROR', f'Air speed velocity must be a positive integer.')
                 return False
-            simulation_data['air_velocity'] = speed_combo.get()
+            simulation_data['air_velocity'] = v
         elif flow_conditions == 'natural_convection' and 'air_velocity' in simulation_data:
             del simulation_data['air_velocity']
         simulation_data['color_palette'] = color_combo.get()
         simulation_data['description'] = desc_combo.get()
+        simulation_data['finish']=sutr_combo.get()
         return True
     
     reset_main()
@@ -593,6 +607,13 @@ def open_simulation(prj_path=None):
     dsgn_list = sorted(list(simulation_data['source_layout']))
     dsgn_combo['values'] = dsgn_list
     dsgn_combo.grid(row=row_id, column=1, padx=10, pady=10)
+
+    row_id += 1
+    ttk.Label(grid_frame, text='Power').grid(row=row_id, column=0, padx=10)
+    power_combo = ttk.Combobox(grid_frame)
+    power_combo['values'] = [100*i for i in range(1,5)]
+    power_combo.grid(row=row_id, column=1, padx=10, pady=10)
+    ttk.Label(grid_frame, text='W').grid(row=row_id, column=2, padx=10)
     
     row_id += 1
     ttk.Label(grid_frame, text='Position Y,Z').grid(row=row_id, column=0, padx=10)
@@ -600,6 +621,19 @@ def open_simulation(prj_path=None):
     sourceyz_combo['values'] = ['100,100','200,200','300,300']
     sourceyz_combo.grid(row=row_id, column=1, padx=10, pady=10)
     ttk.Label(grid_frame, text='mm').grid(row=row_id, column=2, padx=10)
+
+    row_id += 1
+    ttk.Label(grid_frame, text='Module').grid(row=row_id, column=0, padx=10)
+    package_combo = ttk.Combobox(grid_frame)
+    package_combo['values'] = DBH.list_package()
+    package_combo['state'] = 'readonly'
+    package_combo.grid(row=row_id, column=1, padx=10, pady=10)
+    ttk.Label(grid_frame, text='mm').grid(row=row_id, column=2, padx=10)
+    def set_package(event=None):
+        w,h,r = DBH.get_package(package_combo.get())
+        sourcewh_combo.set(f'{w}x{h}')
+        thjc_combo.set(r)
+    package_combo.bind("<<ComboboxSelected>>", set_package)
 
     row_id += 1
     ttk.Label(grid_frame, text='Size WxH').grid(row=row_id, column=0, padx=10)
@@ -614,13 +648,6 @@ def open_simulation(prj_path=None):
         w,h = wh.split(',')
         sourcewh_combo.set(f'{h}x{w}')
     ttk.Button(grid_frame, text='FLIP', command=flip_wh).grid(row=row_id, column=3, padx=10)
-
-    row_id += 1
-    ttk.Label(grid_frame, text='Power').grid(row=row_id, column=0, padx=10)
-    power_combo = ttk.Combobox(grid_frame)
-    power_combo['values'] = [100*i for i in range(1,5)]
-    power_combo.grid(row=row_id, column=1, padx=10, pady=10)
-    ttk.Label(grid_frame, text='W').grid(row=row_id, column=2, padx=10)
 
     row_id += 1
     ttk.Label(grid_frame, text='Rth(j,c)').grid(row=row_id, column=0, padx=10)
@@ -663,7 +690,8 @@ def open_simulation(prj_path=None):
             y,z = (int(s) for s in sourceyz_combo.get().split(',',1))
             w,h = (int(s) for s in sourcewh_combo.get().lower().replace('x',',').split(',',1))
             thjc = float(thjc_combo.get())
-        except ValueError:
+        except ValueError as e:
+            showerror('DATA INPUT ERROR', e)
             return False
         if p<1:
             if dsgn in simulation_data['source_layout']:
@@ -812,6 +840,27 @@ def open_simulation(prj_path=None):
                 return False
             mat_info.set(f'Thermal conductivity {kth} W/m.K @ 25 C.')
     mat_combo.bind("<<ComboboxSelected>>", show_conductivity)
+    row_id += 1
+    ttk.Label(grid_frame, text="Finish").grid(row=row_id, column=0, padx=10)
+    sutr_combo = ttk.Combobox(grid_frame, width=70)
+    sutr_combo["state"] = "readonly"
+    SUTR_LIST = DBH.list_surface_treatment()
+    sutr_combo["values"] = SUTR_LIST
+    if 'finish' in simulation_data:
+        k = simulation_data['finish']
+        for s in SUTR_LIST:
+            if s.split(':',1)[0] == k:
+                sutr_combo.set(s)
+    else:
+        sutr_combo.set(SUTR_LIST[0])
+    sutr_combo.grid(row=row_id, column=1, padx=10, pady=10)
+    sfc_info = tk.StringVar()
+    ttk.Label(grid_frame, textvariable=sfc_info).grid(row=row_id, column=2, padx=10, pady=10)
+    def show_emissivity(event=None):
+        if get_data():
+            k = DBH.finish[simulation_data['finish']]
+            sfc_info.set(f'Surface emissivity is {k}')
+    sutr_combo.bind("<<ComboboxSelected>>", show_emissivity)
 
 
     grid_frame = ttk.Frame(sim_book)
