@@ -6,6 +6,7 @@
 0.1.4 Reading of palettes.
 0.2.0 Materials.
 0.3.0 Emissivity and package.
+0.3.1 P66. New name.
 """
 
 import json
@@ -24,7 +25,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageTk
 __author__ = "Kostadin Kostadinov"
 __credits__ = ["Kostadin Kostadinov"]
 __license__ = "TBD"
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 __maintainer__ = "Kostadin Kostadinov"
 __status__ = "Alpha"
 
@@ -940,14 +941,17 @@ def open_simulation(prj_path=None):
 
 
     def save_simulation():
-        file_path = tk_filedialog.asksaveasfilename(
+        global LAST_DESIGN
+        file_path = Path(tk_filedialog.asksaveasfilename(
             confirmoverwrite=False,
             initialdir=WORSPACE_DIR,
             initialfile=LAST_DESIGN,
             title="Select project 0XXXXX.json file",
             filetypes=(("json files", "*.json"), ("all files", "*.*")),
-        )
-
+        ))
+        if not file_path.is_file():
+            return False
+        LAST_DESIGN = file_path
         if not get_data():
             return False
         with open(file_path, "w") as writer:
