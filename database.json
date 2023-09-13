@@ -1821,6 +1821,42 @@
             "fin_width": 4,
             "fin_height": 30,
             "fin_space": 6
+        },
+        "FESK92": {
+            "description": "Fischer Elektronik SK92",
+            "natural_convection": {
+                "thermal_resistance": [
+                    [
+                        41.7,
+                        2.08
+                    ],
+                    [
+                        53.1,
+                        1.72
+                    ],
+                    [
+                        77.4,
+                        1.23
+                    ],
+                    [
+                        102,
+                        0.998
+                    ],
+                    [
+                        152,
+                        0.944
+                    ],
+                    [
+                        201,
+                        0.916
+                    ]
+                ]
+            },
+            "baseplate_thickness": 10,
+            "baseplate_width": 100,
+            "fin_width": 4,
+            "fin_height": 30,
+            "fin_space": 6
         }
     },
     "material": {
@@ -1921,6 +1957,11 @@
             25,
             38,
             0.15
+        ],
+        "CERA50W": [
+            15,
+            48,
+            0.8
         ],
         "34x94": [
             34,

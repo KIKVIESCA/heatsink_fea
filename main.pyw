@@ -7,6 +7,7 @@
 0.2.0 Materials.
 0.3.0 Emissivity and package.
 0.3.1 P66. New name.
+0.3.2 Scale heatsink. SK92.
 """
 
 import json
@@ -25,7 +26,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageTk
 __author__ = "Kostadin Kostadinov"
 __credits__ = ["Kostadin Kostadinov"]
 __license__ = "TBD"
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 __maintainer__ = "Kostadin Kostadinov"
 __status__ = "Alpha"
 
@@ -116,10 +117,14 @@ class Database:
             self.e_list.append(f'No {flow_conditions} data available for heatsink {hs_key}.')
             return False
         if flow_conditions == 'forced_convection' and air_velocity not in self.heatsinks[hs_key][flow_conditions]['thermal_resistance']:
-            self.e_list.append(f'Heatsink {hs_key}: nNo data for {air_velocity} m/s in database.')
+            self.e_list.append(f'Heatsink {hs_key}: No data for {air_velocity} m/s in database.')
             return False
         # datasheet temperature difference
-        self.exp_dt = self.heatsinks[self.hs_key][flow_conditions]['steady_temperature']-self.heatsinks[hs_key][flow_conditions]['ambient_temperature']
+        self.exp_dt = 0
+        if flow_conditions == 'natural_convection':
+            if 'ambient_temperature' in self.heatsinks[self.hs_key][flow_conditions]:
+                self.exp_dt = self.heatsinks[self.hs_key][flow_conditions]['steady_temperature']-self.heatsinks[hs_key][flow_conditions]['ambient_temperature']
+            
         # lookup convection
         """ Read convection data from database.
         Returns list of z coordinates (in mm) and average admittance (in W/K) to that z"""
@@ -177,7 +182,12 @@ def plot_array(telm_array, color_array, file_path="loop.png", down2ambient=False
     # resize to nearest
     img_size = np.array(
         (simulation_data["baseplate_width"], simulation_data["baseplate_height"])
-    )
+    ).astype(int)
+    scale_factor = 1.0
+    if img_size[1] < 300: # 255 + margins
+        scale_factor = 300/img_size[1]
+        img_size =  img_size.astype(float)*scale_factor
+        img_size = img_size.astype(int)
     thermal_img = thermal_img.resize(
         img_size.tolist(),
         resample=Image.Resampling.NEAREST,
@@ -187,7 +197,7 @@ def plot_array(telm_array, color_array, file_path="loop.png", down2ambient=False
     source_dict = simulation_data["source_layout"]
     for k in source_dict:
         heat_dict = source_dict[k]
-        rect_data = np.array(heat_dict["rect"])
+        rect_data = np.array(heat_dict["rect"])*scale_factor
         yz_bl_h = rect_data[:2]
         yz_tr_h = yz_bl_h + rect_data[2:]
         draw.rectangle(
@@ -405,7 +415,7 @@ def run_simulation():
         while dt_error > 2 and simulation_count < MAXIMUM_ITERATIONS:
             #print(f"LOOP {simulation_count} t_error={round(dt_error,6)}") # + 60 * "#"
             # CONVECTION TEMPERATURE CORRECTION
-            if simulation_data["flow_conditions"] == 'natural_convection':
+            if DBH.exp_dt > 0: # natural convection with experimental data
                 dt_loop = (telm_list-tamb_scalar)/DBH.exp_dt
                 Yth_conv_list = np.interp(integral_matrix@dt_loop, (1+np.arange(ryz_cnt[0])), conv_adm_column/ryz_cnt[1])
                 #Ycv_scale_factor = Yavg_convection/np.sum(Yth_conv_list)
@@ -939,17 +949,16 @@ def open_simulation(prj_path=None):
         padx=20, pady=20
     )
 
-
     def save_simulation():
         global LAST_DESIGN
         file_path = Path(tk_filedialog.asksaveasfilename(
             confirmoverwrite=False,
             initialdir=WORSPACE_DIR,
-            initialfile=LAST_DESIGN,
+            initialfile=LAST_DESIGN.name,
             title="Select project 0XXXXX.json file",
             filetypes=(("json files", "*.json"), ("all files", "*.*")),
         ))
-        if not file_path.is_file():
+        if file_path.name == '':
             return False
         LAST_DESIGN = file_path
         if not get_data():
