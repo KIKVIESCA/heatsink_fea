@@ -8,6 +8,7 @@
 0.3.0 Emissivity and package.
 0.3.1 P66. New name.
 0.3.2 Scale heatsink. SK92.
+0.3.3 Layout del+view.
 """
 
 import json
@@ -26,7 +27,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageTk
 __author__ = "Kostadin Kostadinov"
 __credits__ = ["Kostadin Kostadinov"]
 __license__ = "TBD"
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 __maintainer__ = "Kostadin Kostadinov"
 __status__ = "Alpha"
 
@@ -495,7 +496,7 @@ def run_simulation():
     with open(LAST_DESIGN, "w") as writer:
         json.dump(simulation_data, writer)
     print("END OF SIMULATION" + 60 * "#")
-    showinfo('DATA GENERATED', '\n'.join((f'{k}:{v}ºC' for (k,v) in simulation_data['results']['source'].items()))+f'\n\nSimulation results generated in file {LAST_DESIGN.name}')
+    showinfo('DATA GENERATED', '\n'.join(sorted([f'{k}:{v}ºC' for (k,v) in simulation_data['results']['source'].items()]))+f'\n\nSimulation results generated in file {LAST_DESIGN.name}')
     return True
 
 def color_interp(data_list, color_array, data_range=None):
@@ -719,6 +720,19 @@ def open_simulation(prj_path=None):
     row_id += 1
     ttk.Button(grid_frame, text='SAVE HEAT SOURCE', command=save_source).grid(row=row_id, column=0, columnspan=2, padx=10, pady=10
     )
+    def delete_source():
+        dsgn = dsgn_combo.get()
+        if dsgn == '':
+            return False
+        if dsgn in simulation_data['source_layout']:
+            del simulation_data['source_layout'][dsgn]
+            
+        dsgn_combo['values'] = sorted(list(simulation_data['source_layout']))
+        return True
+        
+    ttk.Button(grid_frame, text='DELETE HEAT SOURCE', command=delete_source).grid(row=row_id, column=2, padx=10, pady=10
+    )
+
 
     def show_layout():
         """ Generate layout image."""
@@ -731,7 +745,7 @@ def open_simulation(prj_path=None):
             simulation_data["baseplate_width"], simulation_data["baseplate_height"]
             )
         # create new image
-        power_img = Image.new(mode='L', size=img_size, color='black')
+        power_img = Image.new(mode='L', size=img_size, color='gray')
         # draw power elements
         v1 = img_size*np.array((0,1))
         m1 = np.array([[1,0],[0,-1]])
@@ -747,12 +761,16 @@ def open_simulation(prj_path=None):
             yz_tr_h = v1 + m1@yz_tr_h
             draw.rectangle(
                 yz_bl_h.tolist() + yz_tr_h.tolist(),
-                outline='white',
-                fill='white',
+                fill='black',
                 width=1,
             )
             p = heat_dict['power']
-            draw.text(yz_bl_h.tolist(), f'{k}:{p}W', font=fnt, fill='white')
+            if rect_data[2]>rect_data[3]:
+                draw.text((yz_bl_h+(1,-10)).tolist(), f'{k}:{p}W', font=fnt, fill='white')
+            else:
+                draw.text((yz_bl_h+(1,-20)).tolist(), f'{k}', font=fnt, fill='white')
+                draw.text((yz_bl_h+(1,-10)).tolist(), f'{p}W', font=fnt, fill='white')
+
         power_img.save(file_path)
         print(f"See source layout {file_path}")
         startfile(file_path)
