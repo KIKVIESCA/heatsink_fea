@@ -9,6 +9,7 @@
 0.3.1 P66. New name.
 0.3.2 Scale heatsink. SK92.
 0.3.3 Layout del+view.
+0.3.4 Imagedraw rect orientation, gui time config.
 """
 
 import json
@@ -27,7 +28,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageTk
 __author__ = "Kostadin Kostadinov"
 __credits__ = ["Kostadin Kostadinov"]
 __license__ = "TBD"
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 __maintainer__ = "Kostadin Kostadinov"
 __status__ = "Alpha"
 
@@ -38,7 +39,6 @@ COLOR_PATH = Path('./color_palette.json')
 
 simulation_data = {}
 MAXIMUM_ITERATIONS = 99
-SIMULATION_SECONDS = 1
 print_help = False
 
 
@@ -265,239 +265,12 @@ def plot_array(telm_array, color_array, file_path="loop.png", down2ambient=False
     print(f"See figure {file_path}")
     return True
 
-def run_simulation():
-    # cartesian coordinate grid
-    """y_list = np.arange(0, simulation_data["baseplate_width"])
-    z_list = np.arange(0, simulation_data["baseplate_height"])
-    y_val, z_val = np.meshgrid(y_list, z_list)"""
-    global simulation_data
-    # PULL DATA FROM DATABASE
-    if not DBH.select_heatsink(simulation_data["heatsink"], simulation_data["baseplate_width"], simulation_data["flow_conditions"], simulation_data['air_velocity'] if 'air_velocity' in simulation_data else None):
-        showerror('HEATSINK ERROR', '\n'.join(DBH.e_list))
-        DBH.e_list = []
-        return False
-    thermal_conductivity = DBH.scaled_conductivity(simulation_data["material"])
-    if thermal_conductivity is None:
-        showerror('MATERIAL ERROR', '\n'.join(DBH.e_list))
-        DBH.e_list = []
-        return False
-    kth_y = thermal_conductivity*DBH.get_baseplate_thickness()
-    kth_x = thermal_conductivity/DBH.get_baseplate_thickness()
-    eth = DBH.finish[simulation_data['finish']]
+def sorted_rect_coor(xy1, xy2):
+    """ Return smaller and greater dimens"""
+    a = np.stack((xy1, xy2), axis=0)
+    a = np.sort(a, axis=0)
+    return a[0], a[1]
 
-    # check heat sources
-    heat_count = 0
-    source_dict = simulation_data["source_layout"]
-    for k in source_dict:
-        heat_dict = source_dict[k]
-        rect_data = np.array(heat_dict["rect"])
-        yz_bl_h = rect_data[:2]
-        yz_tr_h = yz_bl_h + rect_data[2:]
-        if np.any(yz_bl_h < (0, 0)) or np.any(yz_tr_h > yz_tr_h):
-            showerror("RANGE SOURCE", f"Source {k} out of range.")
-            return False
-        """
-        for k2 in source_dict:
-            if k2 != k:
-                rect_data2 = np.array(source_dict[k2]["rect"])
-                yz_bl_2 = rect_data2[:2]
-                yz_tr_2 = yz_bl_2 + rect_data2[2:]"""
-        heat_count += heat_dict["power"]
-    if heat_count < 1:  # W
-        showerror("LOW SOURCE", f"Source power too low")
-        return False
-    Yavg_convection = DBH.scaled_convection(simulation_data["baseplate_height"])
-    print(f"Rth_cv={np.round(Yavg_convection**-1,4)} K/W")
-    
-    # loop, starting 2x2 matrix
-    last_stamp = datetime.now()
-    map_partition = 0
-    mm_step = np.array(
-        (simulation_data["baseplate_width"], simulation_data["baseplate_height"])
-    ).astype(float)/2
-    ryz_cnt = 2*np.ones(2) # 2 rows vertically, 2 colums horizontally
-    tamb_scalar = simulation_data["ambient_temperature"]
-    telm_list = tamb_scalar*np.ones((2,2)) + 50 # as stated in datasheet
-    while map_partition < 20 and (datetime.now() - last_stamp).total_seconds() < SIMULATION_SECONDS:
-        print(f"PARTITION #{map_partition} " + 60 * "#")
-        # loop variables update and reshape
-        last_stamp = datetime.now()
-        #map_partition > 0:
-        if mm_step[0] < mm_step[1]:
-            # split vertically, upper and lower part
-            # TEMPERATURE reshape : shape is 1 x matrix_size
-            mm_step /= (1,2) # split cell height
-            ryz_cnt *= (2,1) # 2 rows, 1 column
-            ryz_cnt = ryz_cnt.astype(int)
-            telm_list = np.repeat(telm_list,2, axis=0).reshape(ryz_cnt)
-        else:
-            # split horizontally, left and right part
-            mm_step /= (2,1) # split cell width
-            ryz_cnt *= (1,2) # 1 row, 2 columns
-            ryz_cnt = ryz_cnt.astype(int)
-            telm_list = np.repeat(telm_list,2).reshape(ryz_cnt)
-        matrix_size = np.prod(ryz_cnt)
-        integral_matrix=np.tril(np.ones((ryz_cnt[0],ryz_cnt[0]))) #np.transpose(np.triu(np.ones((ryz_cnt[0],ryz_cnt[0])))/(1+np.arange(ryz_cnt[0])))
-        # horizontal index is column id, vertical identifier is row id
-        ry, rz = np.meshgrid(np.arange(ryz_cnt[1]), np.arange(ryz_cnt[0]))
-        # heat dissipation matrix
-        y_grid = ry * mm_step[0]
-        z_grid = rz * mm_step[1]
-        #yz_list = np.transpose(np.vstack((y_rav, z_rav)))
-        pyz_list = 0#np.zeros(matrix_size)
-        for heat_dict in simulation_data["source_layout"].values():
-            rect_data = np.array(heat_dict["rect"])
-            heat_density = heat_dict["power"] / np.prod(rect_data[2:])  # W/mm2
-            dy = np.minimum(y_grid+ mm_step[0], rect_data[0]+rect_data[2]) - np.maximum(y_grid, rect_data[0])
-            dz = np.minimum(z_grid+ mm_step[1], rect_data[1]+rect_data[3]) - np.maximum(z_grid, rect_data[1])
-            pyz_list += np.maximum(dy, 0)*np.maximum(dz, 0) * heat_density
-        #print(f"Pyz={round(np.sum(pyz_list))} W")
-        # CONVECTION ADMITTANCE LIST: shape is 1 x matrix_size W/K
-        z_list = (np.arange(ryz_cnt[0]) + 1) * mm_step[1]
-        conv_adm_column = DBH.scaled_convection(z_list)
-        #if simulation_data["flow_conditions"] == 'forced_convection':
-        Yth_conv_list = np.repeat(conv_adm_column, ryz_cnt[1])/ryz_cnt[1]
-        Yth_conv_list = np.reshape(Yth_conv_list, ryz_cnt)
-        # CONDUCTION singular matrix in W/K
-        conduction_matrix = 0 #matrix_size x matrix_size
-        #if map_partition > 0:
-        # conduction with adjacent roll and next roll
-        # kk for di in (1, ryz_cnt[0]):  # np.arange(1, matrix_size):
-        eye_sum = 0
-        kth_config = (
-            (kth_y, 1),# horizontal y conduction
-            (kth_y*DBH.get_z_factor(mm_step[1]), ryz_cnt[1]), # vertical z conduction
-        )
-        for kth_yz, di in  kth_config:#for roll_axis in (0, 1): #range(1,matrix_size):
-            # roll to the next coordinate
-            ry2 = ry-di%ryz_cnt[1] # horizontal conduction, move 1 position
-            rz2 = rz-int(di/ryz_cnt[1]) # vertical conduction, move 1 ryz_cnt[1] positions
-            boundary_condition = np.logical_and(ry2 >= 0, rz2 >= 0)
-            if False:
-                print(
-                    f"Boundary sum is {np.sum(boundary_condition)}, should be {2**map_partition*(2**map_partition-1)}"
-                )
-            # print(f'Roll elements = {di}')
-            dy = (ry - np.roll(ry, di)) * mm_step[0]
-            dz = (rz - np.roll(rz, di)) * mm_step[1]
-            # compute
-            # dt * contact length (=np.cross product) / distance, values in K
-            dyzr = (mm_step[1] * dy + mm_step[0] * dz) / (dy**2 + dz**2)
-            dyzr = np.where(boundary_condition, dyzr, 0)
-            if print_help:  # boudary condition verification: removes negative
-                """dist_list = [np.min(dyzr), np.sum(dyzr), np.max(dyzr)]
-                print(f"Relative distance is {dist_list}")
-                dyzr = np.where(boundary_condition, dyzr, 0)
-                dist_list = [np.min(dyzr), np.sum(dyzr), np.max(dyzr)]
-                print(f"Relative distance is {dist_list}")
-                """
-                eye1 = (
-                    np.eye(matrix_size, k=di)
-                    * np.where(boundary_condition, 1, 0).ravel()
-                )
-                eye2 = np.transpose(eye1)
-                eye_sum+= np.roll(eye1, -di) - eye1 + np.roll(eye2, di) - eye2
-            # last di elements are excluded
-            dyzr_eye = np.eye(matrix_size, k=di) * dyzr.ravel()# * dtr.ravel()
-            # additional 10% vertical thermal conductance trough fins
-            if False:#roll_axis == 1:
-                dyzr_eye *= 1.1
-            eye2 = np.transpose(dyzr_eye)
-            # values in W/K
-            conduction_matrix += (
-                np.roll(dyzr_eye, -di) - dyzr_eye + np.roll(eye2, di) - eye2
-            )*kth_yz
-        if False:
-            print("CONDUCTION TRANSFER EYE MATRIX")
-            print(np.reshape(np.diag(eye_sum), ryz_cnt))
-        # loop until error gets below 10C divided by all the elements
-        simulation_count = 0
-        dt_error = 100  #
-        while dt_error > 2 and simulation_count < MAXIMUM_ITERATIONS:
-            #print(f"LOOP {simulation_count} t_error={round(dt_error,6)}") # + 60 * "#"
-            # CONVECTION TEMPERATURE CORRECTION
-            if DBH.exp_dt > 0: # natural convection with experimental data
-                dt_loop = (telm_list-tamb_scalar)/DBH.exp_dt
-                Yth_conv_list = np.interp(integral_matrix@dt_loop, (1+np.arange(ryz_cnt[0])), conv_adm_column/ryz_cnt[1])
-                #Ycv_scale_factor = Yavg_convection/np.sum(Yth_conv_list)
-                #Yth_conv_list *= Ycv_scale_factor
-                #print(f'Convection scale factor is {np.round(Ycv_scale_factor,3)}')
-                #print(Yth_conv_list)
-                print(f'Total convection resistance is {np.round(np.sum(Yth_conv_list)**-1,3)} K/W')
-                # RADIATION ADMITTANCE LIST: shape is 1 x matrix_size W/K
-                Yth_rad_list = (
-                    eth
-                    * 5.67e-8
-                    * np.prod(mm_step)
-                    * 1e-6
-                    * ((telm_list + 273.15) ** 4 - (273.15 + tamb_scalar) ** 4)
-                ) / (telm_list - tamb_scalar)
-            else:
-                Yth_rad_list = 0
-            #print(f'Total radiation resistance is {np.round(np.sum(Yth_rad_list)**-1,3)} K/W')
-            #print(Yth_rad_list)
-            # CONVECTION + RADIATION admittance in W/K
-            Rth0_list = (Yth_rad_list + Yth_conv_list)**-1+(kth_x*np.prod(mm_step)*1E-6)**-1
-            admittance_matrix = np.eye(matrix_size) * (Rth0_list**-1).ravel()
-                # CONVECTION + RADIATION admittance in W/K
-            # RESISTANCE in K/W
-            resistance_matrix = np.linalg.inv(admittance_matrix+conduction_matrix)
-            tnew_list = tamb_scalar + (resistance_matrix @ (pyz_list.ravel())).reshape(ryz_cnt)
-            # limit
-            tnew_list = np.maximum(tamb_scalar + 1, tnew_list)
-            dt_error = np.max(np.abs(tnew_list - telm_list))
-            tnew_list = np.minimum(tamb_scalar + 199, tnew_list)
-            # recalculate error
-            simulation_count += 1
-            #print(telm_list.astype(np.uint8))
-            telm_list = np.round(tnew_list,2)
-            if np.any(np.isnan(telm_list)):
-                print(f"T max is {np.max(telm_list)}ºC")
-                return False
-        if print_help and (np.min(ryz_cnt)>1.5):
-            print('POWER GENERATION MATRIX (W)')
-            print(pyz_list.astype(int))
-            print('POWER TROUGH CONVECTION (W)')
-            print(Yth_conv_list.reshape(ryz_cnt)*(telm_list-tamb_scalar).astype(int))
-            print('POWER TROUGH RADIATION (W)')
-            print(Yth_rad_list.reshape(ryz_cnt)*(telm_list-tamb_scalar).astype(int))
-            print('POWER TROUGH CONDUCTION (W)')
-            print(np.diag(conduction_matrix).reshape(ryz_cnt)*(telm_list-tamb_scalar).astype(int))
-            print('TEMPERATURE OF ELEMENTS')
-            print(telm_list.astype(np.uint8))
-        rth_avg = np.average(resistance_matrix)
-        print(f"Rth loop is {round(rth_avg, 4)} K/W, Pyz loop = {round(np.sum(pyz_list))} W")
-        print(f"T in {np.min(telm_list)}ºC ... {np.max(telm_list)}ºC")
-        map_partition += 1
-        # plot
-        if False:#np.min(ryz_cnt)>=2:
-            plot_path = Path('./gif') / f"loop{map_partition}.png"
-            plot_array(telm_list,color_array,plot_path)
-        if simulation_count + 1 > MAXIMUM_ITERATIONS:
-            showerror('CONVERGING ERROR', f'MAXIMUM ITERATIONS REACH WITHOUT CONVERGING: dt_error={round(dt_error)} K, with shape {np.shape(telm_list)}')
-            return False
-    # power grid
-    simulation_data['results'] = {}
-    # for back surface: -kth_x*np.prod(mm_step)*1E-6
-    simulation_data['results']['heatsink'] = telm_list.tolist()
-    simulation_data['results']['source'] = {}
-    for dsgn in simulation_data["source_layout"]:
-        heat_dict = simulation_data["source_layout"][dsgn]
-        dt = heat_dict['power']
-        if 'Rthjc' in heat_dict:
-            dt *= heat_dict['Rthjc']
-        else:
-            dt *= heat_dict['rect'][2]*heat_dict['rect'][3]/62/108*0.06
-        rect_data = np.array(heat_dict["rect"])
-        dy = np.minimum(y_grid+ mm_step[0], rect_data[0]+rect_data[2]) - np.maximum(y_grid, rect_data[0])
-        dz = np.minimum(z_grid+ mm_step[1], rect_data[1]+rect_data[3]) - np.maximum(z_grid, rect_data[1])
-        t = np.sum(telm_list*np.maximum(dy, 0)*np.maximum(dz, 0))/np.prod(rect_data[2:])
-        simulation_data['results']['source'][dsgn] = int(t+dt)
-    with open(LAST_DESIGN, "w") as writer:
-        json.dump(simulation_data, writer)
-    print("END OF SIMULATION" + 60 * "#")
-    showinfo('DATA GENERATED', '\n'.join(sorted([f'{k}:{v}ºC' for (k,v) in simulation_data['results']['source'].items()]))+f'\n\nSimulation results generated in file {LAST_DESIGN.name}')
-    return True
 
 def color_interp(data_list, color_array, data_range=None):
     """ Interpolate colours
@@ -548,10 +321,14 @@ def open_simulation(prj_path=None):
     
     reset_main()
 
-    desc_combo = ttk.Combobox(main_frame, width=70)
+    grid_frame = ttk.Frame(main_frame)
+    grid_frame.pack(fill=tk.BOTH, padx=20, pady=20)
+    ttk.Label(grid_frame, text='Project description').grid(row=0, column=0)
+
+    desc_combo = ttk.Combobox(grid_frame, width=70)
     if 'description' in simulation_data:
         desc_combo.set(simulation_data["description"])
-    desc_combo.pack(padx=20, pady=20)
+    desc_combo.grid(row=0, column=1, padx=10)
 
     sim_book = ttk.Notebook(main_frame)
     sim_book.pack(fill=tk.BOTH, padx=20, pady=20)
@@ -608,7 +385,7 @@ def open_simulation(prj_path=None):
     page_frame = ttk.Frame(sim_book)
     sim_book.add(page_frame, text=f"Source layout")
 
-    grid_frame = ttk.LabelFrame(page_frame, text=f"Definition")
+    grid_frame = ttk.LabelFrame(page_frame, text=f"Heat source definition")
     grid_frame.pack(fill=tk.BOTH, padx=20, pady=20)
 
     row_id = 0
@@ -715,6 +492,9 @@ def open_simulation(prj_path=None):
             'Rthjc':thjc
         }
         dsgn_combo['values'] = sorted(list(simulation_data['source_layout']))
+        s=','.join(sorted(simulation_data['source_layout']))
+        if askyesno('SHOW LAYOUT', f'Heat source {dsgn} has been saved.\nShow current layout of {s}?'):
+            return show_layout()
         return True
         
     row_id += 1
@@ -759,8 +539,9 @@ def open_simulation(prj_path=None):
             yz_tr_h = yz_bl_h + rect_data[2:]
             yz_bl_h = v1 + m1@yz_bl_h
             yz_tr_h = v1 + m1@yz_tr_h
+            yz_bl_h, yz_tr_h = sorted_rect_coor(yz_bl_h, yz_tr_h)
             draw.rectangle(
-                yz_bl_h.tolist() + yz_tr_h.tolist(),
+                yz_bl_h.tolist()+yz_tr_h.tolist(),
                 fill='black',
                 width=1,
             )
@@ -930,6 +711,245 @@ def open_simulation(prj_path=None):
     min_combo['state']='readonly'
     min_combo.grid(row=row_id, column=1, padx=10, pady=10)
 
+    def run_simulation():
+        if askyesno('FAST SIMULATION', 'Run a fast simulation?\nYes = 1s iterations\nNo = 10s iterations'):
+            SIMULATION_SECONDS = 1
+        else:
+            SIMULATION_SECONDS = 10
+        # cartesian coordinate grid
+        """y_list = np.arange(0, simulation_data["baseplate_width"])
+        z_list = np.arange(0, simulation_data["baseplate_height"])
+        y_val, z_val = np.meshgrid(y_list, z_list)"""
+        global simulation_data
+        # PULL DATA FROM DATABASE
+        if not DBH.select_heatsink(simulation_data["heatsink"], simulation_data["baseplate_width"], simulation_data["flow_conditions"], simulation_data['air_velocity'] if 'air_velocity' in simulation_data else None):
+            showerror('HEATSINK ERROR', '\n'.join(DBH.e_list))
+            DBH.e_list = []
+            return False
+        thermal_conductivity = DBH.scaled_conductivity(simulation_data["material"])
+        if thermal_conductivity is None:
+            showerror('MATERIAL ERROR', '\n'.join(DBH.e_list))
+            DBH.e_list = []
+            return False
+        kth_y = thermal_conductivity*DBH.get_baseplate_thickness()
+        kth_x = thermal_conductivity/DBH.get_baseplate_thickness()
+        eth = DBH.finish[simulation_data['finish']]
+
+        # check heat sources
+        heat_count = 0
+        source_dict = simulation_data["source_layout"]
+        for k in source_dict:
+            heat_dict = source_dict[k]
+            rect_data = np.array(heat_dict["rect"])
+            yz_bl_h = rect_data[:2]
+            yz_tr_h = yz_bl_h + rect_data[2:]
+            if np.any(yz_bl_h < (0, 0)) or np.any(yz_tr_h > yz_tr_h):
+                showerror("RANGE SOURCE", f"Source {k} out of range.")
+                return False
+            """
+            for k2 in source_dict:
+                if k2 != k:
+                    rect_data2 = np.array(source_dict[k2]["rect"])
+                    yz_bl_2 = rect_data2[:2]
+                    yz_tr_2 = yz_bl_2 + rect_data2[2:]"""
+            heat_count += heat_dict["power"]
+        if heat_count < 1:  # W
+            showerror("LOW SOURCE", f"Source power too low")
+            return False
+        Yavg_convection = DBH.scaled_convection(simulation_data["baseplate_height"])
+        print(f"Rth_cv={np.round(Yavg_convection**-1,4)} K/W")
+        
+        # loop, starting 2x2 matrix
+        last_stamp = datetime.now()
+        map_partition = 0
+        mm_step = np.array(
+            (simulation_data["baseplate_width"], simulation_data["baseplate_height"])
+        ).astype(float)/2
+        ryz_cnt = 2*np.ones(2) # 2 rows vertically, 2 colums horizontally
+        tamb_scalar = simulation_data["ambient_temperature"]
+        telm_list = tamb_scalar*np.ones((2,2)) + 50 # as stated in datasheet
+        while map_partition < 20 and (datetime.now() - last_stamp).total_seconds() < SIMULATION_SECONDS:
+            print(f"PARTITION #{map_partition} " + 60 * "#")
+            # loop variables update and reshape
+            last_stamp = datetime.now()
+            #map_partition > 0:
+            if mm_step[0] < mm_step[1]:
+                # split vertically, upper and lower part
+                # TEMPERATURE reshape : shape is 1 x matrix_size
+                mm_step /= (1,2) # split cell height
+                ryz_cnt *= (2,1) # 2 rows, 1 column
+                ryz_cnt = ryz_cnt.astype(int)
+                telm_list = np.repeat(telm_list,2, axis=0).reshape(ryz_cnt)
+            else:
+                # split horizontally, left and right part
+                mm_step /= (2,1) # split cell width
+                ryz_cnt *= (1,2) # 1 row, 2 columns
+                ryz_cnt = ryz_cnt.astype(int)
+                telm_list = np.repeat(telm_list,2).reshape(ryz_cnt)
+            matrix_size = np.prod(ryz_cnt)
+            integral_matrix=np.tril(np.ones((ryz_cnt[0],ryz_cnt[0]))) #np.transpose(np.triu(np.ones((ryz_cnt[0],ryz_cnt[0])))/(1+np.arange(ryz_cnt[0])))
+            # horizontal index is column id, vertical identifier is row id
+            ry, rz = np.meshgrid(np.arange(ryz_cnt[1]), np.arange(ryz_cnt[0]))
+            # heat dissipation matrix
+            y_grid = ry * mm_step[0]
+            z_grid = rz * mm_step[1]
+            #yz_list = np.transpose(np.vstack((y_rav, z_rav)))
+            pyz_list = 0#np.zeros(matrix_size)
+            for heat_dict in simulation_data["source_layout"].values():
+                rect_data = np.array(heat_dict["rect"])
+                heat_density = heat_dict["power"] / np.prod(rect_data[2:])  # W/mm2
+                dy = np.minimum(y_grid+ mm_step[0], rect_data[0]+rect_data[2]) - np.maximum(y_grid, rect_data[0])
+                dz = np.minimum(z_grid+ mm_step[1], rect_data[1]+rect_data[3]) - np.maximum(z_grid, rect_data[1])
+                pyz_list += np.maximum(dy, 0)*np.maximum(dz, 0) * heat_density
+            #print(f"Pyz={round(np.sum(pyz_list))} W")
+            # CONVECTION ADMITTANCE LIST: shape is 1 x matrix_size W/K
+            z_list = (np.arange(ryz_cnt[0]) + 1) * mm_step[1]
+            conv_adm_column = DBH.scaled_convection(z_list)
+            #if simulation_data["flow_conditions"] == 'forced_convection':
+            Yth_conv_list = np.repeat(conv_adm_column, ryz_cnt[1])/ryz_cnt[1]
+            Yth_conv_list = np.reshape(Yth_conv_list, ryz_cnt)
+            # CONDUCTION singular matrix in W/K
+            conduction_matrix = 0 #matrix_size x matrix_size
+            #if map_partition > 0:
+            # conduction with adjacent roll and next roll
+            # kk for di in (1, ryz_cnt[0]):  # np.arange(1, matrix_size):
+            eye_sum = 0
+            kth_config = (
+                (kth_y, 1),# horizontal y conduction
+                (kth_y*DBH.get_z_factor(mm_step[1]), ryz_cnt[1]), # vertical z conduction
+            )
+            for kth_yz, di in  kth_config:#for roll_axis in (0, 1): #range(1,matrix_size):
+                # roll to the next coordinate
+                ry2 = ry-di%ryz_cnt[1] # horizontal conduction, move 1 position
+                rz2 = rz-int(di/ryz_cnt[1]) # vertical conduction, move 1 ryz_cnt[1] positions
+                boundary_condition = np.logical_and(ry2 >= 0, rz2 >= 0)
+                if False:
+                    print(
+                        f"Boundary sum is {np.sum(boundary_condition)}, should be {2**map_partition*(2**map_partition-1)}"
+                    )
+                # print(f'Roll elements = {di}')
+                dy = (ry - np.roll(ry, di)) * mm_step[0]
+                dz = (rz - np.roll(rz, di)) * mm_step[1]
+                # compute
+                # dt * contact length (=np.cross product) / distance, values in K
+                dyzr = (mm_step[1] * dy + mm_step[0] * dz) / (dy**2 + dz**2)
+                dyzr = np.where(boundary_condition, dyzr, 0)
+                if print_help:  # boudary condition verification: removes negative
+                    """dist_list = [np.min(dyzr), np.sum(dyzr), np.max(dyzr)]
+                    print(f"Relative distance is {dist_list}")
+                    dyzr = np.where(boundary_condition, dyzr, 0)
+                    dist_list = [np.min(dyzr), np.sum(dyzr), np.max(dyzr)]
+                    print(f"Relative distance is {dist_list}")
+                    """
+                    eye1 = (
+                        np.eye(matrix_size, k=di)
+                        * np.where(boundary_condition, 1, 0).ravel()
+                    )
+                    eye2 = np.transpose(eye1)
+                    eye_sum+= np.roll(eye1, -di) - eye1 + np.roll(eye2, di) - eye2
+                # last di elements are excluded
+                dyzr_eye = np.eye(matrix_size, k=di) * dyzr.ravel()# * dtr.ravel()
+                # additional 10% vertical thermal conductance trough fins
+                if False:#roll_axis == 1:
+                    dyzr_eye *= 1.1
+                eye2 = np.transpose(dyzr_eye)
+                # values in W/K
+                conduction_matrix += (
+                    np.roll(dyzr_eye, -di) - dyzr_eye + np.roll(eye2, di) - eye2
+                )*kth_yz
+            if False:
+                print("CONDUCTION TRANSFER EYE MATRIX")
+                print(np.reshape(np.diag(eye_sum), ryz_cnt))
+            # loop until error gets below 10C divided by all the elements
+            simulation_count = 0
+            dt_error = 100  #
+            while dt_error > 2 and simulation_count < MAXIMUM_ITERATIONS:
+                #print(f"LOOP {simulation_count} t_error={round(dt_error,6)}") # + 60 * "#"
+                # CONVECTION TEMPERATURE CORRECTION
+                if DBH.exp_dt > 0: # natural convection with experimental data
+                    dt_loop = (telm_list-tamb_scalar)/DBH.exp_dt
+                    Yth_conv_list = np.interp(integral_matrix@dt_loop, (1+np.arange(ryz_cnt[0])), conv_adm_column/ryz_cnt[1])
+                    #Ycv_scale_factor = Yavg_convection/np.sum(Yth_conv_list)
+                    #Yth_conv_list *= Ycv_scale_factor
+                    #print(f'Convection scale factor is {np.round(Ycv_scale_factor,3)}')
+                    #print(Yth_conv_list)
+                    print(f'Total convection resistance is {np.round(np.sum(Yth_conv_list)**-1,3)} K/W')
+                    # RADIATION ADMITTANCE LIST: shape is 1 x matrix_size W/K
+                    Yth_rad_list = (
+                        eth
+                        * 5.67e-8
+                        * np.prod(mm_step)
+                        * 1e-6
+                        * ((telm_list + 273.15) ** 4 - (273.15 + tamb_scalar) ** 4)
+                    ) / (telm_list - tamb_scalar)
+                else:
+                    Yth_rad_list = 0
+                #print(f'Total radiation resistance is {np.round(np.sum(Yth_rad_list)**-1,3)} K/W')
+                #print(Yth_rad_list)
+                # CONVECTION + RADIATION admittance in W/K
+                Rth0_list = (Yth_rad_list + Yth_conv_list)**-1+(kth_x*np.prod(mm_step)*1E-6)**-1
+                admittance_matrix = np.eye(matrix_size) * (Rth0_list**-1).ravel()
+                    # CONVECTION + RADIATION admittance in W/K
+                # RESISTANCE in K/W
+                resistance_matrix = np.linalg.inv(admittance_matrix+conduction_matrix)
+                tnew_list = tamb_scalar + (resistance_matrix @ (pyz_list.ravel())).reshape(ryz_cnt)
+                # limit
+                tnew_list = np.maximum(tamb_scalar + 1, tnew_list)
+                dt_error = np.max(np.abs(tnew_list - telm_list))
+                tnew_list = np.minimum(tamb_scalar + 199, tnew_list)
+                # recalculate error
+                simulation_count += 1
+                #print(telm_list.astype(np.uint8))
+                telm_list = np.round(tnew_list,2)
+                if np.any(np.isnan(telm_list)):
+                    print(f"T max is {np.max(telm_list)}ºC")
+                    return False
+            if print_help and (np.min(ryz_cnt)>1.5):
+                print('POWER GENERATION MATRIX (W)')
+                print(pyz_list.astype(int))
+                print('POWER TROUGH CONVECTION (W)')
+                print(Yth_conv_list.reshape(ryz_cnt)*(telm_list-tamb_scalar).astype(int))
+                print('POWER TROUGH RADIATION (W)')
+                print(Yth_rad_list.reshape(ryz_cnt)*(telm_list-tamb_scalar).astype(int))
+                print('POWER TROUGH CONDUCTION (W)')
+                print(np.diag(conduction_matrix).reshape(ryz_cnt)*(telm_list-tamb_scalar).astype(int))
+                print('TEMPERATURE OF ELEMENTS')
+                print(telm_list.astype(np.uint8))
+            rth_avg = np.average(resistance_matrix)
+            print(f"Rth loop is {round(rth_avg, 4)} K/W, Pyz loop = {round(np.sum(pyz_list))} W")
+            print(f"T in {np.min(telm_list)}ºC ... {np.max(telm_list)}ºC")
+            map_partition += 1
+            # plot
+            if False:#np.min(ryz_cnt)>=2:
+                plot_path = Path('./gif') / f"loop{map_partition}.png"
+                plot_array(telm_list,color_array,plot_path)
+            if simulation_count + 1 > MAXIMUM_ITERATIONS:
+                showerror('CONVERGING ERROR', f'MAXIMUM ITERATIONS REACH WITHOUT CONVERGING: dt_error={round(dt_error)} K, with shape {np.shape(telm_list)}')
+                return False
+        # power grid
+        simulation_data['results'] = {}
+        # for back surface: -kth_x*np.prod(mm_step)*1E-6
+        simulation_data['results']['heatsink'] = telm_list.tolist()
+        simulation_data['results']['source'] = {}
+        for dsgn in simulation_data["source_layout"]:
+            heat_dict = simulation_data["source_layout"][dsgn]
+            dt = heat_dict['power']
+            if 'Rthjc' in heat_dict:
+                dt *= heat_dict['Rthjc']
+            else:
+                dt *= heat_dict['rect'][2]*heat_dict['rect'][3]/62/108*0.06
+            rect_data = np.array(heat_dict["rect"])
+            dy = np.minimum(y_grid+ mm_step[0], rect_data[0]+rect_data[2]) - np.maximum(y_grid, rect_data[0])
+            dz = np.minimum(z_grid+ mm_step[1], rect_data[1]+rect_data[3]) - np.maximum(z_grid, rect_data[1])
+            t = np.sum(telm_list*np.maximum(dy, 0)*np.maximum(dz, 0))/np.prod(rect_data[2:])
+            simulation_data['results']['source'][dsgn] = int(t+dt)
+        with open(LAST_DESIGN, "w") as writer:
+            json.dump(simulation_data, writer)
+        print("END OF SIMULATION" + 60 * "#")
+        if askyesno('DATA GENERATED', '\n'.join(sorted([f'{k}:{v}ºC' for (k,v) in simulation_data['results']['source'].items()]))+f'\n\nSimulation results generated in file {LAST_DESIGN.name}\nPlot results?'):
+            return plot_results()
+        return True
+
     def run_sim():
         if get_data():
             return run_simulation()
@@ -937,7 +957,7 @@ def open_simulation(prj_path=None):
     grid_frame = ttk.LabelFrame(main_frame, text=f"Simulation")
     grid_frame.pack(fill=tk.BOTH, padx=20, pady=20)
     
-    ttk.Button(grid_frame, text="RUN SIMULATION", command=run_sim).grid(row=0, column=0,
+    ttk.Button(grid_frame, text="RUN\nSIMULATION", command=run_sim).grid(row=0, column=0,
         padx=20, pady=20
     )
 
@@ -971,7 +991,7 @@ def open_simulation(prj_path=None):
         global LAST_DESIGN
         file_path = Path(tk_filedialog.asksaveasfilename(
             confirmoverwrite=False,
-            initialdir=WORSPACE_DIR,
+            initialdir=LAST_DESIGN.parent,
             initialfile=LAST_DESIGN.name,
             title="Select project 0XXXXX.json file",
             filetypes=(("json files", "*.json"), ("all files", "*.*")),
@@ -988,9 +1008,16 @@ def open_simulation(prj_path=None):
     ttk.Button(grid_frame, text="SAVE CONFIGURATION", command=save_simulation).grid(row=0, column=2,
         padx=20, pady=20
     )
+    def open_workspace():
+        startfile(LAST_DESIGN.parent)
+
+    ttk.Button(grid_frame, text="OPEN WORKSPACE FOLDER", command=open_workspace).grid(row=0, column=3,
+        padx=20, pady=20
+    )
+
     ttk.Button(
         grid_frame, text="OPEN A DIFFERENT CONFIGURATION", command=start_page
-    ).grid(row=0, column=3,
+    ).grid(row=0, column=4,
         padx=20, pady=20
     )
 
