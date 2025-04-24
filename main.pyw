@@ -10,6 +10,7 @@
 0.3.2 Scale heatsink. SK92.
 0.3.3 Layout del+view.
 0.3.4 Imagedraw rect orientation, gui time config.
+0.3.5 Flow control. Linear Yth to zero.
 """
 
 import json
@@ -28,7 +29,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageTk
 __author__ = "Kostadin Kostadinov"
 __credits__ = ["Kostadin Kostadinov"]
 __license__ = "TBD"
-__version__ = "0.3.4"
+__version__ = "0.3.5"
 __maintainer__ = "Kostadin Kostadinov"
 __status__ = "Alpha"
 
@@ -137,8 +138,10 @@ class Database:
             convection_array = np.array(self.heatsinks[hs_key][flow_conditions]['thermal_resistance'])
         else:
             assert True
+        self.energy = self.heatsinks[hs_key][flow_conditions]
         self.convection_data = convection_array[convection_array[:, 0].argsort()]
-        self.convection_data[:,1] *= self.heatsinks[hs_key]['baseplate_width']/baseplate_width*self.convection_data[:,0]**.5 # Rth*z**.5 
+        # convection factor = Rth*z**.5
+        self.convection_data[:,1] *= self.heatsinks[hs_key]['baseplate_width']/baseplate_width
         return True
     
     def get_baseplate_thickness(self):
@@ -157,20 +160,50 @@ class Database:
         fin_factor = dx*np.sum((x_list**2+dz**2)**-.5)
         return (1+fin_factor*d['fin_width']/(d['fin_width']+d['fin_space']))
 
-    def scaled_convection(self, z_list):
+    def scaled_convection(self, z_list, power_scale=1):
         """Estimate vertical convection from 0 to 1st z, 1st to 2nd, etc.
         admittance is in W/K, corresponds to dz*simulation_baseplate_width
         Z ascending list contains vertical coordinates
+        convection factor convection_F = Rth*z**.5
+
+        Power scale:
+        Temperature difference (steady state - ambient) relative to experimental.
+        For lower power scale, use differential thermal admittance for lower height.
         """
+        # energy over baseplate Z, W/m
+        '''
         # interpolate for z: Rth*z**.5 = constant
         Rthr_list = np.interp(z_list, self.convection_data[:,0], self.convection_data[:,1])
         Yth_list = Rthr_list**-1*z_list**.5
         if type(Yth_list) is not np.ndarray:
             return Yth_list
+        '''
+        convection_z = self.convection_data[:,0]
+        convection_F = self.convection_data[:,1] * self.convection_data[:,0]**.5
+        '''
+        # interpolate to zero
+        convection_z = np.insert(convection_z, 0, 0)
+        convection_F = np.insert(convection_F,0, convection_F[0])
+        # extrapolate to 1E3
+        if np.max(convection_z) < 1E3:
+            convection_F = np.append(convection_F, convection_F[-1])
+            convection_z = np.append(convection_z, 1E3)'''
+        # interpolate for z: Rth*z**.5 = constant
+        # Rth = np.interp(z_list, convection_z, convection_F)*z_list**.5
+        result_F = np.interp(z_list*power_scale, convection_z, convection_F)
+        sqrt_Yth = result_F**-1*z_list**.5
+        # linear interpolation on Yth for Z coordinates lower than available data
+        # infinite admittance dY/dz is not ideal
+        linear_Yth = self.convection_data[:,1][0]**-1/convection_z[0]*z_list
+        # piecewise
+        Yth_list = np.where(z_list>convection_z[0], sqrt_Yth, linear_Yth)
+        if type(z_list) is not np.ndarray:
+            return Yth_list
+        #print(f"Rth_cv={np.round(Yth_list[-1]**-1,4)} K/W")
         # differental
         Yth_list = np.insert(Yth_list, 0, 0)
         return Yth_list[1:]-Yth_list[:-1]
-    
+
 def plot_array(telm_array, color_array, file_path="loop.png", down2ambient=False):
     """ Plot thermal distribution
     """
@@ -187,8 +220,7 @@ def plot_array(telm_array, color_array, file_path="loop.png", down2ambient=False
     scale_factor = 1.0
     if img_size[1] < 300: # 255 + margins
         scale_factor = 300/img_size[1]
-        img_size =  img_size.astype(float)*scale_factor
-        img_size = img_size.astype(int)
+        img_size =  (img_size.astype(float)*scale_factor).astype(int)
     thermal_img = thermal_img.resize(
         img_size.tolist(),
         resample=Image.Resampling.NEAREST,
@@ -243,23 +275,26 @@ def plot_array(telm_array, color_array, file_path="loop.png", down2ambient=False
     palette_img = Image.fromarray(np.stack((ra,ga,ba), axis=-1), mode='RGB')
     palette_img = palette_img.resize((20, 256)).transpose(Image.Transpose.FLIP_TOP_BOTTOM)
     full_image.paste(palette_img, (full_size[0]-30, full_size[1]-266))
+    draw.text((img_size[0]+20, 100), 'H='+ str(simulation_data["baseplate_height"])+'mm', font=fnt, fill="black")
+    
     dy_list = ((20,0),(40,0))
-    # minimum
-    t0 = int(data_range[0])
-    yz0 = full_size-(60,10)
-    draw.line([tuple((yz0+dy).tolist()) for dy in dy_list], fill="black", width=1)
-    draw.text(yz0.tolist(), f'{t0}', font=fnt, fill="black")
-    # maximum
-    t0 = int(data_range[1])
-    yz0 -= (0, 256)
-    draw.line([tuple((yz0+dy).tolist()) for dy in dy_list], fill="black", width=1)
-    draw.text(tuple(yz0), f'{t0}', font=fnt, fill="black")
+    t1 = np.average(telm_array)
     if down2ambient:
         # heatsink
-        t0 = int(np.min(telm_array))
-        yz0 += (0, int((data_range[1]-t0)/(data_range[1]-data_range[0])*256))
+        t0 = np.min(telm_array)
+        t_markers = (data_range[0], t0, t1, data_range[1])
+        dt = data_range[1] - data_range[0]
+        tr = data_range[0]/dt
+        f_markers = [t0/dt-tr for t0 in t_markers]
+    else:
+        # minimum, middle, maximum. t0 = data_range[0]
+        f_markers = (0, (t1-data_range[0])/(data_range[1]/data_range[0]), 1)
+        t_markers = [data_range[0]+f*data_range[1] for f in f_markers]
+    for t0, f0 in zip(t_markers, f_markers):
+        t0 = int(t0)
+        yz0 = full_size-(60,10+ int(f0*256))
         draw.line([tuple((yz0+dy).tolist()) for dy in dy_list], fill="black", width=1)
-        draw.text(tuple(yz0), f'{t0}', font=fnt, fill="black")
+        draw.text(tuple(yz0-(0, 5)), f'{t0}', font=fnt, fill="black")
     # SAVE
     full_image.save(file_path)
     print(f"See figure {file_path}")
@@ -571,32 +606,8 @@ def open_simulation(prj_path=None):
 
 
     grid_frame = ttk.Frame(sim_book)
-    sim_book.add(grid_frame, text=f"Flow conditions")
+    sim_book.add(grid_frame, text=f"Heatsink and flow")
 
-    row_id = 0
-    ttk.Label(grid_frame, text="Air flow type").grid(row=row_id, column=0, padx=10)
-    flow_combo = ttk.Combobox(grid_frame)
-    flow_combo["values"] = ['natural_convection','forced_convection']
-    if 'flow_conditions' in simulation_data:
-        flow_combo.set(simulation_data["flow_conditions"])
-    else:
-        flow_combo.set('natural_convection')
-    flow_combo.grid(row=row_id, column=1, padx=10, pady=10)
-
-    row_id += 1
-    ttk.Label(grid_frame, text="Air velocity").grid(row=row_id, column=0, padx=10)
-    speed_combo = ttk.Combobox(grid_frame)
-    speed_combo["values"] = list(range(1,10))
-    speed_combo['state'] = 'readonly'  
-    if 'air_velocity' in simulation_data:
-        speed_combo.set(simulation_data["air_velocity"])
-    elif 'flow_conditions' in simulation_data and simulation_data['flow_conditions']=='forced_convection':
-        speed_combo.set(4)
-    speed_combo.grid(row=row_id, column=1, padx=10, pady=10)
-    ttk.Label(grid_frame, text="m/s (forced convection only)").grid(row=row_id, column=2, padx=10, sticky='w')
-    
-    grid_frame = ttk.Frame(sim_book)
-    sim_book.add(grid_frame, text=f"Heatsink selection")
     row_id = 0
     ttk.Label(grid_frame, text="Model").grid(row=row_id, column=0, padx=10)
     model_combo = ttk.Combobox(grid_frame, width=70)
@@ -610,22 +621,111 @@ def open_simulation(prj_path=None):
                 model_combo.set(s)
     else:
         model_combo.set(HEATSINK_LIST[0])
-    model_combo.grid(row=row_id, column=1, padx=10, pady=10)
+    model_combo.grid(row=row_id, column=1, columnspan=2, padx=10, pady=10)
     hs_info = tk.StringVar()
-    ttk.Label(grid_frame, textvariable=hs_info).grid(row=row_id, column=2, padx=10, pady=10)
-    def estimate_increase(event=None):
+    ttk.Label(grid_frame, textvariable=hs_info).grid(row=row_id, column=3, padx=10, pady=10)
+    def lookup_heasink(event=None):
         """ Final temperature estimation"""
-        if get_data():
-            if not DBH.select_heatsink(simulation_data["heatsink"], simulation_data["baseplate_width"], simulation_data["flow_conditions"], simulation_data['air_velocity'] if 'air_velocity' in simulation_data else None):
-                hs_info.set('. '.join(DBH.e_list))
-                DBH.e_list = []
-                return False
-            heat_sum = sum(d['power'] for d in simulation_data["source_layout"].values())
-            Telm = simulation_data["ambient_temperature"] + heat_sum/DBH.scaled_convection(simulation_data['baseplate_height'])
-            Telm = Telm.astype(int)
-            hs_info.set(f'Heatsink average temperature will be {Telm} C')
-    model_combo.bind("<<ComboboxSelected>>", estimate_increase)
+        if not get_data():
+            flow_combo['state'] = 'disabled'
+            speed_combo['state'] = 'disabled'
+            return False
+        flow_options = [k for k in  ('natural_convection','forced_convection') if k in DBH.heatsinks[simulation_data["heatsink"]]]
+        flow_combo["values"] = flow_options
+        if len(flow_options)>0:
+            if flow_combo.get() not in flow_options:
+                flow_combo.set(flow_options[0])
+            flow_combo['state'] = 'readonly'
+        else:
+            flow_combo['state'] = 'disabled'
+        if not get_data():
+            speed_combo['state'] = 'disabled'
+            return False
+        if simulation_data["flow_conditions"] == 'forced_convection':
+            speed_options = list(DBH.heatsinks[simulation_data["heatsink"]]['forced_convection']['thermal_resistance'])
+            speed_combo['state'] = 'readonly'
+            speed_combo['values'] = speed_options
+            if len(speed_options)>0 and speed_combo.get() not in speed_options:
+                speed_combo.set(speed_options[0])
+        else:
+            # natural_convection
+            speed_combo['state'] = 'disabled'
+        if not get_data():
+            return False
+        
+        # Average temperature estimation
+        if not DBH.select_heatsink(simulation_data["heatsink"], simulation_data["baseplate_width"], simulation_data["flow_conditions"], simulation_data['air_velocity'] if 'air_velocity' in simulation_data else None):
+            hs_info.set('. '.join(DBH.e_list))
+            DBH.e_list = []
+            return False
+        heat_count = sum(d['power'] for d in simulation_data["source_layout"].values())
+        Telm = simulation_data["ambient_temperature"] + heat_count/DBH.scaled_convection(simulation_data['baseplate_height'])
+        Telm = Telm.astype(int)
+        hs_info.set(f'Heatsink average temperature will be {Telm} C')
+    model_combo.bind("<<ComboboxSelected>>", lookup_heasink)
     row_id += 1
+    ttk.Label(grid_frame, text="Air flow type").grid(row=row_id, column=0, padx=10)
+    flow_combo = ttk.Combobox(grid_frame)
+    flow_combo.grid(row=row_id, column=1, padx=10, pady=10)
+
+    row_id += 1
+    ttk.Label(grid_frame, text="Air velocity").grid(row=row_id, column=0, padx=10)
+    speed_combo = ttk.Combobox(grid_frame)
+    if 'air_velocity' in simulation_data:
+        speed_combo.set(simulation_data["air_velocity"])
+    speed_combo.grid(row=row_id, column=1, padx=10, pady=10)
+    ttk.Label(grid_frame, text="m/s (forced convection only)").grid(row=row_id, column=2, padx=10, sticky='w')
+
+    def get_flow():
+        v = speed_combo.get().split('.',1)[0]
+        if not v.isdigit():
+            showerror('AIRFLOW ERROR', f'Air speed velocity must be a positive integer.')
+            return False
+        hs_key = model_combo.get().split(':',1)[0]
+        baseplate_width = int(y_combo.get())
+        baseplate_height = int(z_combo.get())
+        
+        with open(DATABASE_PATH, 'r') as reader:
+            hs_data = json.load(reader)["heatsink"]
+        if hs_key not in hs_data:
+            showerror('HEATSINK ERROR', f'Heatsink {hs_key} not found in database.')
+            return False
+        hs_data = hs_data[hs_key]
+        fin_width = hs_data['fin_width']
+        fin_height = hs_data['fin_height']
+        fin_space = hs_data['fin_space']
+        # m3/h, dm3/s
+        air_flow_dm3s = int(v) * fin_height * fin_space / (fin_width+fin_space) * baseplate_width * 1E-3
+        air_flow_m3h = air_flow_dm3s * 3.6
+        flow_info = f'Airflow in {baseplate_width} mm of heatsink {hs_key}\n{v} m/s = {round(air_flow_m3h)} m3/h = {round(air_flow_dm3s)} dm3/s'
+        # pressure drop
+        if 'forced_convection' in hs_data:
+            hs_data = hs_data['forced_convection']
+            if 'pressure_drop' in hs_data:
+                # any data is OK (for now)
+                db_height, pressure_drop = hs_data['pressure_drop'][v][0]
+                pressure_drop = round(pressure_drop*baseplate_height/db_height)
+                flow_info += f'\n\nPressure drop: {pressure_drop} Pa'
+        showinfo(f'FLOW RESULTS', flow_info)
+
+        
+    ttk.Button(grid_frame, text='Flow calculation', command=get_flow).grid(row=row_id, column=3, padx=10, sticky='w')
+
+    # flow management
+    if 'flow_conditions' in simulation_data:
+        flow_combo.set(simulation_data["flow_conditions"])
+    else:
+        flow_combo.set('natural_convection')
+    def manage_flow(event=None):
+        if flow_combo.get() == 'natural_convection':
+            speed_combo['state'] = 'disabled'
+        else:
+            speed_combo['state'] = 'readonly'
+
+    flow_combo.bind('<<ComboboxSelected>>', manage_flow)
+    
+    row_id += 1
+
     ttk.Label(grid_frame, text="Material").grid(row=row_id, column=0, padx=10)
     mat_combo = ttk.Combobox(grid_frame, width=70)
     mat_combo["state"] = "readonly"
@@ -638,9 +738,9 @@ def open_simulation(prj_path=None):
                 mat_combo.set(s)
     else:
         mat_combo.set(MATERIAL_LIST[0])
-    mat_combo.grid(row=row_id, column=1, padx=10, pady=10)
+    mat_combo.grid(row=row_id, column=1, columnspan=2, padx=10, pady=10)
     mat_info = tk.StringVar()
-    ttk.Label(grid_frame, textvariable=mat_info).grid(row=row_id, column=2, padx=10, pady=10)
+    ttk.Label(grid_frame, textvariable=mat_info).grid(row=row_id, column=3, padx=10, pady=10)
     def show_conductivity(event=None):
         if get_data():
             kth = DBH.scaled_conductivity(simulation_data["material"]).astype(int)
@@ -663,9 +763,9 @@ def open_simulation(prj_path=None):
                 sutr_combo.set(s)
     else:
         sutr_combo.set(SUTR_LIST[0])
-    sutr_combo.grid(row=row_id, column=1, padx=10, pady=10)
+    sutr_combo.grid(row=row_id, column=1, columnspan=2, padx=10, pady=10)
     sfc_info = tk.StringVar()
-    ttk.Label(grid_frame, textvariable=sfc_info).grid(row=row_id, column=2, padx=10, pady=10)
+    ttk.Label(grid_frame, textvariable=sfc_info).grid(row=row_id, column=3, padx=10, pady=10)
     def show_emissivity(event=None):
         if get_data():
             k = DBH.finish[simulation_data['finish']]
@@ -710,6 +810,8 @@ def open_simulation(prj_path=None):
     min_combo.set('ambient_temperature')
     min_combo['state']='readonly'
     min_combo.grid(row=row_id, column=1, padx=10, pady=10)
+
+    lookup_heasink()
 
     def run_simulation():
         if askyesno('FAST SIMULATION', 'Run a fast simulation?\nYes = 1s iterations\nNo = 10s iterations'):
@@ -756,18 +858,28 @@ def open_simulation(prj_path=None):
         if heat_count < 1:  # W
             showerror("LOW SOURCE", f"Source power too low")
             return False
+        
         Yavg_convection = DBH.scaled_convection(simulation_data["baseplate_height"])
         print(f"Rth_cv={np.round(Yavg_convection**-1,4)} K/W")
-        
+        tamb_scalar = simulation_data["ambient_temperature"]
+        dt = heat_count/Yavg_convection
+        # power density correction
+        power_scale = dt / (
+            DBH.heatsinks[simulation_data["heatsink"]][simulation_data["flow_conditions"]]['steady_temperature']-
+            DBH.heatsinks[simulation_data["heatsink"]][simulation_data["flow_conditions"]]['ambient_temperature'])
+        Yavg_convection = DBH.scaled_convection(simulation_data["baseplate_height"], power_scale)
+        print(f"Rth_cv={np.round(Yavg_convection**-1,4)} K/W when power scale is {round(power_scale,2)}.")
+        dt = heat_count/Yavg_convection
+        print(f"Tavg = {int(dt+tamb_scalar)} ºC")
+
         # loop, starting 2x2 matrix
         last_stamp = datetime.now()
         map_partition = 0
         mm_step = np.array(
             (simulation_data["baseplate_width"], simulation_data["baseplate_height"])
         ).astype(float)/2
+        telm_list = tamb_scalar*np.ones((2,2)) + dt # 50 as stated in datasheet
         ryz_cnt = 2*np.ones(2) # 2 rows vertically, 2 colums horizontally
-        tamb_scalar = simulation_data["ambient_temperature"]
-        telm_list = tamb_scalar*np.ones((2,2)) + 50 # as stated in datasheet
         while map_partition < 20 and (datetime.now() - last_stamp).total_seconds() < SIMULATION_SECONDS:
             print(f"PARTITION #{map_partition} " + 60 * "#")
             # loop variables update and reshape
@@ -804,7 +916,7 @@ def open_simulation(prj_path=None):
             #print(f"Pyz={round(np.sum(pyz_list))} W")
             # CONVECTION ADMITTANCE LIST: shape is 1 x matrix_size W/K
             z_list = (np.arange(ryz_cnt[0]) + 1) * mm_step[1]
-            conv_adm_column = DBH.scaled_convection(z_list)
+            conv_adm_column = DBH.scaled_convection(z_list, power_scale)
             #if simulation_data["flow_conditions"] == 'forced_convection':
             Yth_conv_list = np.repeat(conv_adm_column, ryz_cnt[1])/ryz_cnt[1]
             Yth_conv_list = np.reshape(Yth_conv_list, ryz_cnt)
@@ -889,7 +1001,6 @@ def open_simulation(prj_path=None):
                 # CONVECTION + RADIATION admittance in W/K
                 Rth0_list = (Yth_rad_list + Yth_conv_list)**-1+(kth_x*np.prod(mm_step)*1E-6)**-1
                 admittance_matrix = np.eye(matrix_size) * (Rth0_list**-1).ravel()
-                    # CONVECTION + RADIATION admittance in W/K
                 # RESISTANCE in K/W
                 resistance_matrix = np.linalg.inv(admittance_matrix+conduction_matrix)
                 tnew_list = tamb_scalar + (resistance_matrix @ (pyz_list.ravel())).reshape(ryz_cnt)
@@ -916,8 +1027,8 @@ def open_simulation(prj_path=None):
                 print('TEMPERATURE OF ELEMENTS')
                 print(telm_list.astype(np.uint8))
             rth_avg = np.average(resistance_matrix)
-            print(f"Rth loop is {round(rth_avg, 4)} K/W, Pyz loop = {round(np.sum(pyz_list))} W")
-            print(f"T in {np.min(telm_list)}ºC ... {np.max(telm_list)}ºC")
+            print(f"Rth avg loop is {round(rth_avg, 4)} K/W, Pyz loop = {round(np.sum(pyz_list))} W")
+            print(f"Tavg = {int(np.average(telm_list))}ºC ,T in {int(np.min(telm_list))}ºC ... {int(np.max(telm_list))}ºC")
             map_partition += 1
             # plot
             if False:#np.min(ryz_cnt)>=2:
